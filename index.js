@@ -1187,8 +1187,10 @@ app.post('/api/bot/autopay/retry', async (req, res) => {
             return res.status(400).json({ success: false, error: 'URL Auto Pay belum diatur di Config.' });
         }
 
-        let baseUrl = config.autoPayUrl.replace(/\/trigger-autopay\/?$/, '');
-        let targetUrl = `${baseUrl}/api/retry-autopay`;
+        let cleanBase = config.autoPayUrl
+            .replace(/\/trigger-autopay\/?$/, '')
+            .replace(/\/api\/?$/, '');
+        let targetUrl = `${cleanBase}/api/retry-autopay`;
 
         console.log(`🚀 [RETRY] Menghubungi Server B: ${targetUrl}`);
 
@@ -1197,17 +1199,20 @@ app.post('/api/bot/autopay/retry', async (req, res) => {
             headers: { 'x-api-key': config.autoPaySecret }
         });
         
-        const data = await response.json();
-        if (response.ok && data.success) {
-            res.json({ success: true });
-        } else {
-            res.status(400).json({ success: false, error: data.error || 'Server menolak' });
+        const responseText = await response.text();
+        try {
+            const data = JSON.parse(responseText);
+            return res.json(data);
+        } catch (e) {
+            console.error(`❌ [RETRY] Respon bukan JSON:`, responseText);
+            return res.status(400).json({ success: false, error: 'Server B mengembalikan respon tidak valid (HTML 404/500).' });
         }
     } catch (err) {
         console.error(`❌ [RETRY ERROR]:`, err.message);
-        res.status(500).json({ success: false, error: 'Gagal menghubungi Server Auto Pay: ' + err.message });
+        return res.status(500).json({ success: false, error: err.message });
     }
 });
+
 app.listen(WEBHOOK_PORT, () => { 
     console.log(`🌐 Web Dashboard & Server Webhook aktif di: http://localhost:${WEBHOOK_PORT}`); 
     initDB(); 
