@@ -113,9 +113,14 @@ async function cleanupExpiredQris() {
                     await fs.writeFile(sp, JSON.stringify(sd, null, 2));
                     
                     if (bot && order.user_id) {
-                        bot.sendMessage(order.user_id, `⚠️ *Batal Otomatis*\n\nPesanan \`${order.order_id}\` dibatalkan (Melebihi batas waktu 5 menit atau sistem di-restart). Stok telah dikembalikan ke etalase.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                        bot.sendMessage(order.user_id, `⚠️ *BATAL OTOMATIS*\n\nPesanan \`${order.order_id}\` telah dibatalkan karena melebihi batas waktu 5 menit.\n\n_👇 Klik tombol di bawah untuk kembali berbelanja:_`, { 
+                            parse_mode: 'Markdown',
+                            reply_markup: {
+                                keyboard: [[{ text: '🏷️ Daftar Produk' }, { text: '💰 Cek Saldo' }]],
+                                resize_keyboard: true
+                            }
+                        }).catch(()=>{});
                         
-                        // Hapus pesan QRIS saat order kedaluwarsa
                         if (order.msg_id) {
                             bot.deleteMessage(order.user_id, order.msg_id).catch(()=>{});
                         }
@@ -232,85 +237,227 @@ async function setupTelegramBot() {
         } 
     }
 
-    function renderVarMenu(product) {
-        let descText = (product.description && product.description.trim() !== '') ? `_${product.description}_\n\n` : '';
-        let text = `🛒 *${product.name}*\n${descText}*Pilihan Paket:*\n`;
-        let btns = [];
-        
-        product.variations.forEach(v => {
-            // Tampilan terjual di bot Telegram
-            text += `• ${v.name} : Rp ${v.price.toLocaleString('id-ID')} | 🔥 Terjual: ${v.sold || 0}\n`;
-            if (v.wholesaleMinQty && v.wholesalePrice) {
-                text += `  └ _(Beli min. ${v.wholesaleMinQty} otomatis jadi Rp ${v.wholesalePrice.toLocaleString('id-ID')}/item)_\n`;
-            }
-            btns.push({ text: v.name, callback_data: `sel|${v.id}` });
-        });
-        
-        let layout = chunkArray(btns, 2); 
-        layout.push([{ text: '⬅️ Kembali', callback_data: `back_main` }]);
-        return { text, reply_markup: { inline_keyboard: layout } };
-    }
-
-    function renderOrder(product, v, qty, stock) {
-        let calc = calculatePrice(v, qty);
-        
-        let text = `🛒 *Ringkasan Pesanan*\n\nProduk: ${product.name}\nVarian: ${v.name}\n\n`;
-        text += `Harga: Rp ${calc.baseVPrice.toLocaleString('id-ID')}\n`;
-        text += `Stok: ${stock}\nJumlah: x${qty}\n`;
-        text += `\n*Total Pembayaran: Rp ${calc.total.toLocaleString('id-ID')}*`;
-        
-        return {
-            text, 
-            reply_markup: { inline_keyboard: [
-                [{ text: '-1', callback_data: `qty|-1|${v.id}|${qty}` }, { text: '+1', callback_data: `qty|+1|${v.id}|${qty}` }],
-                [{ text: '💳 Saldo', callback_data: `pay|saldo|${v.id}|${qty}` }, { text: '📱 QRIS', callback_data: `pay|qris|${v.id}|${qty}` }],
-                [{ text: '⬅️ Kembali', callback_data: `back_var|${product.slug}` }]
-            ]}
-        };
-    }
-
-    bot.onText(/\/start|🏠 Menu/, async (msg) => {
+    // --- FUNGSI REUSABLE UNTUK MENU UTAMA (SESUAI GAMBAR REFERENSI) ---
+    async function sendMainMenu(chatId, fromUser, page = 1, editMsgId = null) {
         const release = await dbLock.acquire(); 
         try {
             let users = await readDB(paths.users); 
-            let user = users.find(u => u.id === msg.from.id);
+            let user = users.find(u => u.id === fromUser.id);
             if (!user) { 
-                user = { id: msg.from.id, username: msg.from.username, first_name: msg.from.first_name, balance: 0, trx_count: 0, joined_at: moment().format('YYYY-MM-DD HH:mm:ss') }; 
+                user = { id: fromUser.id, username: fromUser.username, first_name: fromUser.first_name, balance: 0, trx_count: 0, joined_at: moment().format('YYYY-MM-DD HH:mm:ss') }; 
                 users.push(user); 
                 await fs.writeFile(paths.users, JSON.stringify(users, null, 2)); 
             }
             
             let products = await readDB(paths.products);
-            if (!products.length) return bot.sendMessage(msg.chat.id, `Halo! Belum ada produk.`);
+            if (!products.length) {
+                const noProdTxt = `Halo! Belum ada produk saat ini.`;
+                if (editMsgId) return bot.editMessageText(noProdTxt, {chat_id: chatId, message_id: editMsgId}).catch(()=>{});
+                return bot.sendMessage(chatId, noProdTxt);
+            }
 
-            let txt = `Halo ${user.first_name} | **${config.storeName}** 🚀\n\n📦 *Product List*\n\n`;
-            let btns = [];
-            products.forEach((p, i) => { 
-                txt += `${i + 1}. ${p.name}\n`; 
-                btns.push({ text: (i + 1).toString() }); 
+            const ITEMS_PER_PAGE = 9;
+            const totalPages = Math.ceil(products.length / ITEMS_PER_PAGE) || 1;
+            if (page < 1) page = 1;
+            if (page > totalPages) page = totalPages;
+
+            if (!global.userPages) global.userPages = {};
+            global.userPages[chatId] = page;
+
+            let txt = `*DAFTAR PRODUK*\n\n`;
+            
+            const startIndex = (page - 1) * ITEMS_PER_PAGE;
+            const paginatedProducts = products.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+
+            paginatedProducts.forEach((p, i) => { 
+                const absoluteNum = startIndex + i + 1; 
+                txt += `${absoluteNum}. ${p.name}\n`; 
             });
             
-            let layout = chunkArray(btns, 5); 
-            layout.unshift([{ text: '🏷️ List Produk' }, { text: `💰 Saldo: Rp${(user.balance || 0).toLocaleString('id-ID')}` }]); 
-            bot.sendMessage(msg.chat.id, txt, { parse_mode: 'Markdown', reply_markup: { keyboard: layout, resize_keyboard: true } });
+            txt += `\nHalaman ${page}/${totalPages}\n`;
+            
+            let inlineLayout = [];
+            let navBtns = [];
+            if (page > 1) navBtns.push({ text: 'Sebelumnya', callback_data: `main_page|${page - 1}` });
+            if (page < totalPages) navBtns.push({ text: 'Selanjutnya', callback_data: `main_page|${page + 1}` });
+            if (navBtns.length > 0) inlineLayout.push(navBtns);
+
+            const options = { 
+                parse_mode: 'Markdown', 
+                reply_markup: { inline_keyboard: inlineLayout } 
+            };
+
+            // Keyboard Bawah (Reply Keyboard) untuk Angka
+            let numBtns = [];
+            for (let i = 1; i <= products.length; i++) {
+                numBtns.push({ text: i.toString() });
+            }
+            let bottomLayout = chunkArray(numBtns, 5); 
+            bottomLayout.unshift([{ text: '🏷️ Daftar Produk' }, { text: `💰 Saldo: Rp ${(user.balance || 0).toLocaleString('id-ID')}` }]); 
+
+            const replyMarkupData = {
+                keyboard: bottomLayout,
+                resize_keyboard: true
+            };
+
+            if (editMsgId) {
+                bot.editMessageText(txt, { chat_id: chatId, message_id: editMsgId, ...options }).catch(()=>{});
+            } else {
+                // Langsung kirim satu pesan utuh yang membawa teks, inline button, dan keyboard bawah sekaligus
+                bot.sendMessage(chatId, txt, {
+                    ...options,
+                    reply_markup: {
+                        inline_keyboard: inlineLayout,
+                        keyboard: bottomLayout,
+                        resize_keyboard: true
+                    }
+                });
+            }
         } finally { release(); }
+    }
+
+    // --- TAMPILAN MENU VARIASI ---
+    async function renderVarMenu(product) {
+        let descText = (product.description && product.description.trim() !== '') ? `_${product.description}_\n\n` : '';
+        let text = `*${product.name}*\n${descText}`;
+        
+        let totalSold = product.variations.reduce((sum, v) => sum + (v.sold || 0), 0);
+        text += `${totalSold.toLocaleString('id-ID')} Sold\n\n`;
+        
+        let btns = [];
+        for (const v of product.variations) {
+            let stock = await getStockCount(v.id);
+            text += `${v.name} - Rp ${v.price.toLocaleString('id-ID')} (Stock: ${stock})\n`;
+            
+            if (v.wholesaleMinQty && v.wholesalePrice) {
+                text += ` └ _(Beli min. ${v.wholesaleMinQty} otomatis Rp ${v.wholesalePrice.toLocaleString('id-ID')}/item)_\n`;
+            }
+            text += `\n`; 
+            btns.push({ text: v.name, callback_data: `sel|${v.id}` });
+        }
+        
+        text = text.trimEnd(); 
+        text += `\n\n_Updated ${moment().format('HH:mm:ss')} WIB_`;
+        
+        let layout = chunkArray(btns, 2); 
+        layout.push([{ text: 'Back', callback_data: `back_main` }]);
+        return { text, reply_markup: { inline_keyboard: layout } };
+    }
+
+    function renderOrder(product, v, qty, stock) {
+        let calc = calculatePrice(v, qty);
+        let unitPriceDisplay = calc.isGrosir ? calc.finalPrice : calc.baseVPrice;
+        let grosirNote = calc.isGrosir ? ' *(Grosir)*' : '';
+        let text = `*RINGKASAN PESANAN*\n\n`;
+        text += `*Produk*  : ${product.name}\n`;
+        text += `*Varian*  : ${v.name}\n\n`;
+        text += `*Harga Satuan* : Rp ${unitPriceDisplay.toLocaleString('id-ID')}${grosirNote}\n`;
+        text += `*Stok Tersedia*  : ${stock}\n\n`;
+        text += `*Jumlah Beli*  : x${qty}\n`;
+        text += `*Total Pembayaran : Rp ${calc.total.toLocaleString('id-ID')}*\n\n`;
+        
+        return {
+            text, 
+            reply_markup: { inline_keyboard: [
+                [
+                    { text: '+ 1', callback_data: `qty|+1|${v.id}|${qty}` },
+                    { text: '+ 10', callback_data: `qty|+10|${v.id}|${qty}` },
+                    { text: '+ 100', callback_data: `qty|+100|${v.id}|${qty}` }
+                ],
+                [
+                    { text: '- 1', callback_data: `qty|-1|${v.id}|${qty}` },
+                    { text: '- 10', callback_data: `qty|-10|${v.id}|${qty}` },
+                    { text: '- 100', callback_data: `qty|-100|${v.id}|${qty}` }
+                ],
+                [
+                    { text: 'Refresh Stok', callback_data: `qty|+0|${v.id}|${qty}` }
+                ],
+                [
+                    { text: 'BAYAR SALDO', callback_data: `pay|saldo|${v.id}|${qty}` },
+                    { text: 'BAYAR QRIS', callback_data: `pay|qris|${v.id}|${qty}` }
+                ],
+                [
+                    { text: 'Batal / Kembali', callback_data: `back_var|${product.slug}` }
+                ]
+            ]}
+        };
+    }
+
+    // --- TRIGGER COMMAND & MESSAGE ---
+    bot.onText(/\/start|🏠 Menu/, async (msg) => {
+        return sendMainMenu(msg.chat.id, msg.from, 1);
     });
 
     bot.on('message', async (msg) => {
-        if (msg.text === '🏷️ List Produk') {
-            bot.sendMessage(msg.chat.id, "Ketik /start lalu pilih angka.");
-        } else if (msg.text && msg.text.startsWith('💰 Saldo:')) {
+        const chatId = msg.chat.id;
+
+        if (msg.text === '🏷️ Daftar Produk' || msg.text === '🏠 Menu Utama' || msg.text === '🏷️ List Produk') {
+            return sendMainMenu(chatId, msg.from, 1); 
+        } else if (msg.text === '💰 Cek Saldo' || (msg.text && msg.text.startsWith('💰 Saldo:'))) {
             let users = await readDB(paths.users); 
             let user = users.find(u => u.id === msg.from.id) || { balance: 0 };
-            bot.sendMessage(msg.chat.id, `Saldo: **Rp${(user.balance || 0).toLocaleString('id-ID')}**`, { parse_mode: 'Markdown' }); 
+            bot.sendMessage(msg.chat.id, `Saldo Akun Anda: **Rp ${(user.balance || 0).toLocaleString('id-ID')}**`, { parse_mode: 'Markdown' }); 
+        } 
+        else if (msg.reply_to_message && msg.reply_to_message.text && msg.reply_to_message.text.includes('CUSTOM QUANTITY')) {
+            const userId = msg.from.id;
+            const newQty = parseInt(msg.text);
+            
+            if (isNaN(newQty) || newQty < 1) {
+                return bot.sendMessage(msg.chat.id, `❌ Masukkan angka jumlah yang valid (minimal 1).`);
+            }
+            
+            if (!global.customQtySessions || !global.customQtySessions[userId]) {
+                return bot.sendMessage(msg.chat.id, `⚠️ Sesi kedaluwarsa. Silakan ulangi tombol Custom Qty dari menu pesanan.`);
+            }
+            
+            const session = global.customQtySessions[userId];
+            let products = await readDB(paths.products);
+            let targetProd = null, targetVar = null;
+            
+            for (const p of products) {
+                if (p.variations) {
+                    const found = p.variations.find(v => v.id === session.varId);
+                    if (found) {
+                        targetProd = p;
+                        targetVar = found;
+                        break;
+                    }
+                }
+            }
+            
+            if (!targetVar) {
+                return bot.sendMessage(msg.chat.id, `❌ Variasi produk tidak ditemukan.`);
+            }
+            
+            const stockCount = await getStockCount(targetVar.id);
+            if (newQty > stockCount) {
+                return bot.sendMessage(msg.chat.id, `❌ *Stok Tidak Cukup!*\n\nJumlah yang kamu minta (${newQty}) melebihi stok tersedia (${stockCount} Tersedia). Silakan masukkan angka yang lebih kecil.`, { parse_mode: 'Markdown' });
+            }
+            
+            bot.deleteMessage(msg.chat.id, msg.message_id).catch(()=>{});
+            bot.deleteMessage(msg.chat.id, msg.reply_to_message.message_id).catch(()=>{});
+            
+            const updatedOrder = renderOrder(targetProd, targetVar, newQty, stockCount);
+            
+            bot.editMessageText(updatedOrder.text, {
+                chat_id: session.chatId,
+                message_id: session.msgId,
+                parse_mode: 'Markdown',
+                reply_markup: updatedOrder.reply_markup
+            }).catch(()=>{});
+            
+            delete global.customQtySessions[userId];
         }
     });
 
+    // Menangani ketikan angka manual dari keyboard bawah
     bot.onText(/^(\d+)$/, async (msg, match) => {
+        if (msg.reply_to_message) return; // Mencegah konflik
+        
         let products = await readDB(paths.products);
         let num = parseInt(match[1]);
         if (num > 0 && num <= products.length) {
-            const { text, reply_markup } = renderVarMenu(products[num - 1]);
+            const { text, reply_markup } = await renderVarMenu(products[num - 1]);
             bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown', reply_markup });
         }
     });
@@ -321,23 +468,33 @@ async function setupTelegramBot() {
         const parts = query.data.split('|'); 
         const action = parts[0]; 
 
+        if (action === 'main_page') {
+            const page = parseInt(parts[1]);
+            bot.answerCallbackQuery(query.id);
+            return sendMainMenu(chatId, query.from, page, msgId);
+        }
+
         if (action === 'back_main') { 
             bot.deleteMessage(chatId, msgId).catch(()=>{}); 
-            return bot.answerCallbackQuery(query.id); 
+            bot.answerCallbackQuery(query.id);
+            if (!global.userPages) global.userPages = {};
+            let currentPage = global.userPages[chatId] || 1;
+            return sendMainMenu(chatId, query.from, currentPage); 
         }
 
         let products = await readDB(paths.products);
+
         if (action === 'back_var') {
             const prod = products.find(p => p.slug === parts[1]);
             if (prod) { 
-                const { text, reply_markup } = renderVarMenu(prod); 
+                const { text, reply_markup } = await renderVarMenu(prod); 
                 bot.editMessageText(text, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup }).catch(()=>{}); 
             }
             return bot.answerCallbackQuery(query.id);
         }
 
         if (action === 'batal_qris') {
-            bot.answerCallbackQuery(query.id, { text: "Dibatalkan." }); 
+            bot.answerCallbackQuery(query.id, { text: "Pesanan dibatalkan." }); 
             bot.deleteMessage(chatId, msgId).catch(()=>{});
             const release = await dbLock.acquire();
             try {
@@ -352,7 +509,10 @@ async function setupTelegramBot() {
                     await fs.writeFile(paths.pending_qris, JSON.stringify(pQris, null, 2));
                 }
             } finally { release(); }
-            return;
+            
+            if (!global.userPages) global.userPages = {};
+            let currentPage = global.userPages[chatId] || 1;
+            return sendMainMenu(chatId, query.from, currentPage); 
         }
 
         let selProd = null, selVar = null;
@@ -366,20 +526,26 @@ async function setupTelegramBot() {
             } 
         }
         
-        if (!selVar) return bot.answerCallbackQuery(query.id, { text: "Error: Variasi tidak ditemukan" });
-        const stockCount = await getStockCount(selVar.id);
+        if (!selVar && action !== 'main_page' && action !== 'back_main' && action !== 'back_var' && action !== 'refresh_var' && action !== 'batal_qris') {
+            return bot.answerCallbackQuery(query.id, { text: "Error: Variasi tidak ditemukan" });
+        }
+        const stockCount = selVar ? await getStockCount(selVar.id) : 0;
 
         if (action === 'sel' || action === 'qty') {
             let qty = action === 'sel' ? 1 : parseInt(parts[3]);
             if (action === 'qty') { 
                 const op = parts[1]; 
                 if (op === '+1') qty += 1; 
-                if (op === '-1') qty -= 1; 
+                else if (op === '+10') qty += 10;
+                else if (op === '+100') qty += 100;
+                else if (op === '-1') qty -= 1;
+                else if (op === '-10') qty -= 10;
+                else if (op === '-100') qty -= 100;
             }
             if (qty < 1) qty = 1; 
             if (qty > stockCount) { 
                 qty = stockCount; 
-                bot.answerCallbackQuery(query.id, { text: "Stok maksimal!" }); 
+                bot.answerCallbackQuery(query.id, { text: "Stok maksimal telah tercapai!" }); 
             } else { 
                 bot.answerCallbackQuery(query.id); 
             }
@@ -392,7 +558,7 @@ async function setupTelegramBot() {
             const calcData = calculatePrice(selVar, finalQty);
             const basePrice = calcData.total;
             
-            if (finalQty > stockCount || stockCount === 0) return bot.answerCallbackQuery(query.id, { text: "❌ Stok habis.", show_alert: true });
+            if (finalQty > stockCount || stockCount === 0) return bot.answerCallbackQuery(query.id, { text: "Maaf, stok barang sedang kosong.", show_alert: true });
             
             if (parts[1] === 'saldo') {
                 const cfg = await readConfig(); 
@@ -404,8 +570,8 @@ async function setupTelegramBot() {
                     let user = users[userIndex];
                     
                     if ((user.balance || 0) < basePrice) {
-                        bot.answerCallbackQuery(query.id, { text: "❌ Saldo tidak mencukupi.", show_alert: true });
-                        return bot.sendMessage(chatId, `❌ Saldo tidak mencukupi.`);
+                        bot.answerCallbackQuery(query.id, { text: "❌ Saldo Anda tidak mencukupi untuk pembelian ini.", show_alert: true });
+                        return bot.sendMessage(chatId, `❌ Saldo Anda tidak mencukupi.`);
                     }
                     
                     bot.answerCallbackQuery(query.id);
@@ -423,8 +589,7 @@ async function setupTelegramBot() {
                     
                     orders.push({ order_id: oid, user_id: user.id, product: `${selProd.name} - ${selVar.name}`, qty: finalQty, total: basePrice, date: moment().format('YYYY-MM-DD HH:mm'), paymentMethod: 'balance', accounts: accs });
                     await fs.writeFile(paths.orders, JSON.stringify(orders, null, 2));
-
-                    // LOGIKA UPDATE TERJUAL SAAT BAYAR VIA SALDO
+                    
                     let pData = await readDB(paths.products);
                     for (let pd of pData) {
                         let vr = pd.variations && pd.variations.find(x => x.id === selVar.id);
@@ -434,20 +599,25 @@ async function setupTelegramBot() {
                         }
                     }
                     await fs.writeFile(paths.products, JSON.stringify(pData, null, 2));
-                    // ------------------------------------------
                     
-                    let noteText = selProd.name.toLowerCase().includes('youtube') ? `\n\n⚠️ *CATATAN PENTING:*\nJangan mengubah password atau login ke akun selama **10-15 menit** ke depan. Sistem kami sedang memproses aktivasi Premium otomatis di belakang layar.` : '';
-                    bot.sendMessage(chatId, `✅ **LUNAS** ✅\nInvoice: \`${oid}\`\n\n📦 **AKUN:**\n${accs.join('\n')}${noteText}`, { parse_mode: 'Markdown' });
-
-                    if (selProd.name.toLowerCase().includes('youtube')) runAutoPayQuietly(accs);
+                    // Panggil helper
+                    await finalizeOrderSuccess({
+                        order_id: oid,
+                        user_id: user.id,
+                        var_id: selVar.id,
+                        qty: finalQty,
+                        total: basePrice,
+                        reserved_accounts: accs,
+                        msg_id: null
+                    }, 'balance', 'PEMBAYARAN BERHASIL (LUNAS)');
 
                 } finally { release(); }
             } else if (parts[1] === 'qris') {
                 const cfg = await readConfig(); 
                 const prefix = cfg.trxPrefix || "BR"; 
                 if (!cfg.qrisString) {
-                    bot.answerCallbackQuery(query.id, { text: "⚠️ QRIS belum diatur Admin.", show_alert: true }); 
-                    return bot.sendMessage(chatId, "⚠️ QRIS belum diatur Admin.");
+                    bot.answerCallbackQuery(query.id, { text: "QRIS belum diatur oleh Admin.", show_alert: true }); 
+                    return bot.sendMessage(chatId, "QRIS belum diatur oleh Admin.");
                 }
                 
                 const release = await dbLock.acquire();
@@ -462,8 +632,17 @@ async function setupTelegramBot() {
                     const oid = `${prefix}-${Date.now()}`;
                     const dynamicQrisString = makeDynamicQris(cfg.qrisString, finalTotal);
                     
-                    // Siapkan object pesanan dengan tambahan msg_id
-                    let newPendingOrder = { 
+                    let pq = await readDB(paths.pending_qris);
+                    
+                    const qrUrl = `https://quickchart.io/qr?text=${encodeURIComponent(dynamicQrisString)}&size=400&margin=2`;
+                    const cap = `*INVOICE PEMBAYARAN*\n\`${oid}\`\n\nProduk: ${selProd.name}\nVariasi: ${selVar.name}\nJumlah: ${finalQty}x\nTotal: Rp. ${finalTotal.toLocaleString('id-ID')}\n\nBisa dibayar via GoPay, DANA, OVO, ShopeePay, dll.\nBerlaku 5 Menit!`;
+                    
+                    bot.answerCallbackQuery(query.id); 
+                    bot.deleteMessage(chatId, msgId).catch(()=>{});
+                    
+                    const sentMsg = await bot.sendPhoto(chatId, qrUrl, { caption: cap, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: 'Batalkan Pesanan', callback_data: `batal_qris|${oid}` }]] } });
+                    
+                    pq.push({ 
                         order_id: oid, 
                         user_id: query.from.id, 
                         var_id: selVar.id, 
@@ -472,21 +651,9 @@ async function setupTelegramBot() {
                         reserved_accounts: resAccs, 
                         status: 'pending', 
                         date: moment().format('YYYY-MM-DD HH:mm:ss'),
-                        timestamp: Date.now() 
-                    };
-                    
-                    const qrUrl = `https://quickchart.io/qr?text=${encodeURIComponent(dynamicQrisString)}&size=400&margin=2`;
-                    const cap = `*PESAN TERKONFIRMASI*\n\nInvoice: \`${oid}\`\nProduk: ${selProd.name}\nVariasi: ${selVar.name}\n*Total: Rp ${finalTotal.toLocaleString('id-ID')}*\n\n⏳ _Segera lakukan pembayaran, pesanan akan dibatalkan otomatis dalam 5 menit._`;
-                    
-                    bot.answerCallbackQuery(query.id); 
-                    bot.deleteMessage(chatId, msgId).catch(()=>{});
-                    
-                    // Kirim pesan QRIS lalu tangkap message_id nya
-                    const sentMsg = await bot.sendPhoto(chatId, qrUrl, { caption: cap, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: 'Batalkan', callback_data: `batal_qris|${oid}` }]] } });
-                    
-                    newPendingOrder.msg_id = sentMsg.message_id;
-                    let pq = await readDB(paths.pending_qris);
-                    pq.push(newPendingOrder);
+                        timestamp: Date.now(),
+                        msg_id: sentMsg.message_id
+                    });
                     await fs.writeFile(paths.pending_qris, JSON.stringify(pq, null, 2));
 
                 } finally { release(); }
@@ -553,6 +720,7 @@ app.get('/api/bot/stats', async (req, res) => {
     
     let totalRev = orders.reduce((s, o) => s + o.total, 0); 
     let totalStock = 0;
+    let totalSold = orders.reduce((s, o) => s + (o.qty || 1), 0);
     
     try { 
         const stockFiles = await fs.readdir(paths.stocks); 
@@ -571,7 +739,8 @@ app.get('/api/bot/stats', async (req, res) => {
         totalProducts: products.length, 
         totalOrders: orders.length, 
         revenue: totalRev, 
-        totalStock: totalStock 
+        totalStock: totalStock,
+        totalSold: totalSold
     });
 });
 
@@ -617,7 +786,6 @@ app.post('/api/bot/products/:slug/variations', async (req, res) => {
     let p = await readDB(paths.products); 
     const f = p.find(x => x.slug === req.params.slug);
     if(f) { 
-        // Tambahan properti sold: 0 untuk variasi baru
         f.variations.push({ id: `var_${Date.now()}`, ...req.body, price: parseInt(req.body.price), wholesaleMinQty: null, wholesalePrice: null, sold: 0 }); 
         await fs.writeFile(paths.products, JSON.stringify(p, null, 2)); 
     }
@@ -688,6 +856,86 @@ app.post('/api/bot/balance/:id/add', async (req, res) => {
 });
 
 // ==========================================
+// HELPER: PROSES PESANAN SUKSES
+// ==========================================
+async function finalizeOrderSuccess(orderData, paymentMethod, successTitle) {
+    const config = await readConfig();
+    let p = await readDB(paths.products); 
+    let selProd = { name: "Unknown" }, selVar = { name: "Unknown" };
+    
+    // Update jumlah stok terjual (sold)
+    for (const pr of p) { 
+        if (pr.variations) { 
+            const f = pr.variations.find(v => v.id === orderData.var_id); 
+            if (f) { 
+                selProd = pr; 
+                selVar = f; 
+                f.sold = (f.sold || 0) + orderData.qty; 
+                break; 
+            } 
+        } 
+    }
+    await fs.writeFile(paths.products, JSON.stringify(p, null, 2));
+    
+    // Simpan ke riwayat pesanan
+    let orders = await readDB(paths.orders);
+    orders.push({ 
+        order_id: orderData.order_id, 
+        user_id: orderData.user_id, 
+        product: `${selProd.name} - ${selVar.name}`, 
+        qty: orderData.qty, 
+        total: orderData.total, 
+        date: moment().format('YYYY-MM-DD HH:mm'), 
+        paymentMethod: paymentMethod,
+        accounts: orderData.reserved_accounts 
+    });
+    await fs.writeFile(paths.orders, JSON.stringify(orders, null, 2));
+    
+    // Notifikasi Telegram
+    let noteText = selProd.name.toLowerCase().includes('youtube') ? `\n\n⚠️ *CATATAN PENTING:*\nJangan mengubah password atau login ke akun selama **1-5 menit** ke depan. Sistem kami sedang memproses aktivasi Premium otomatis di belakang layar.` : '';
+    
+    if (bot) {
+        let strukLunas = `✅ *${successTitle}* ✅\n\n`;
+        strukLunas += `🧾 *No. Invoice:* \`${orderData.order_id}\`\n`;
+        strukLunas += `🗓️ *Tanggal:* ${moment().format('DD/MM/YYYY HH:mm')}\n\n`;
+        strukLunas += `🎁 *DETAIL PESANAN KAMU:*\n`;
+        strukLunas += `━━━━━━━━━━━━━━━━━━━━━\n`;
+        
+        if (orderData.reserved_accounts.length > 5) {
+            strukLunas += `📄 _Detail akun terlampir pada file/dokumen di bawah ini._\n`;
+        } else {
+            strukLunas += `${orderData.reserved_accounts.join('\n')}\n`;
+        }
+
+        strukLunas += `━━━━━━━━━━━━━━━━━━━━━\n`;
+        strukLunas += `Terima kasih telah berbelanja di *${config.storeName}*! 🙏${noteText}`;
+
+        bot.sendMessage(orderData.user_id, strukLunas, { parse_mode: 'Markdown' });
+        
+        // Kirim dokumen jika QTY > 5
+        if (orderData.reserved_accounts.length > 5) {
+            const fileBuffer = Buffer.from(orderData.reserved_accounts.join('\n'), 'utf-8');
+            bot.sendDocument(orderData.user_id, fileBuffer, {}, {
+                filename: `Akun_${orderData.order_id}.txt`,
+                contentType: 'text/plain'
+            });
+        }
+
+        if (orderData.msg_id) bot.deleteMessage(orderData.user_id, orderData.msg_id).catch(()=>{});
+    }
+
+    // Eksekusi Auto Pay jika produk relevan dan order <= 50
+    if (selProd.name.toLowerCase().includes('youtube')) {
+        if (orderData.qty <= 50) {
+            runAutoPayQuietly(orderData.reserved_accounts);
+        } else {
+            console.log(`⚠️ [SYSTEM] Order ${orderData.order_id} lebih dari 50 akun (${orderData.qty}). Auto Pay dibatalkan agar server tidak overload.`);
+        }
+    }
+}
+
+
+// ==========================================
 // PENDING QRIS & APPROVAL MANUAL
 // ==========================================
 app.get('/api/bot/pending', async (req, res) => {
@@ -695,7 +943,7 @@ app.get('/api/bot/pending', async (req, res) => {
 });
 
 app.post('/api/bot/pending/:id/approve', async (req, res) => {
-    const release = await dbLock.acquire();
+    const release = await dbLock.acquire(); 
     try {
         let pq = await readDB(paths.pending_qris);
         const idx = pq.findIndex(o => o.order_id === req.params.id);
@@ -703,45 +951,13 @@ app.post('/api/bot/pending/:id/approve', async (req, res) => {
         
         const orderData = pq[idx];
         
-        let p = await readDB(paths.products); 
-        let selProd = { name: "Unknown" }, selVar = { name: "Unknown" };
-        for (const pr of p) { 
-            if (pr.variations) { 
-                const f = pr.variations.find(v => v.id === orderData.var_id); 
-                if (f) { 
-                    selProd = pr; 
-                    selVar = f; 
-                    f.sold = (f.sold || 0) + orderData.qty; // Update Terjual
-                    break; 
-                } 
-            } 
-        }
-        await fs.writeFile(paths.products, JSON.stringify(p, null, 2)); // Simpan data terjual
-        
-        let orders = await readDB(paths.orders);
-        orders.push({ 
-            order_id: orderData.order_id, 
-            user_id: orderData.user_id, 
-            product: `${selProd.name} - ${selVar.name}`, 
-            qty: orderData.qty, 
-            total: orderData.total, 
-            date: moment().format('YYYY-MM-DD HH:mm'), 
-            paymentMethod: 'qris_manual',
-            accounts: orderData.reserved_accounts 
-        });
-        await fs.writeFile(paths.orders, JSON.stringify(orders, null, 2));
-        
-        let noteText = selProd.name.toLowerCase().includes('youtube') ? `\n\n⚠️ *CATATAN PENTING:*\nJangan mengubah password atau login ke akun selama **10-15 menit** ke depan. Sistem kami sedang memproses aktivasi Premium otomatis di belakang layar.` : '';
-        if (bot) bot.sendMessage(orderData.user_id, `🎉 **PEMBAYARAN DISETUJUI MANUAL!**\n\nInvoice: \`${orderData.order_id}\`\n\n📦 **AKUN:**\n${orderData.reserved_accounts.join('\n')}${noteText}`, { parse_mode: 'Markdown' });
-        
-        // Hapus pesan QRIS setelah disetujui admin
-        if (bot && orderData.msg_id) bot.deleteMessage(orderData.user_id, orderData.msg_id).catch(()=>{});
+        // Panggil helper
+        await finalizeOrderSuccess(orderData, 'qris_manual', 'PEMBAYARAN DISETUJUI MANUAL');
 
+        // Hapus dari pending
         pq.splice(idx, 1); 
         await fs.writeFile(paths.pending_qris, JSON.stringify(pq, null, 2));
         res.json({ success: true });
-
-        if (selProd.name.toLowerCase().includes('youtube')) runAutoPayQuietly(orderData.reserved_accounts);
 
     } finally { release(); }
 });
@@ -759,9 +975,8 @@ app.post('/api/bot/pending/:id/reject', async (req, res) => {
         sd.push(...orderData.reserved_accounts); 
         await fs.writeFile(sp, JSON.stringify(sd, null, 2));
         
-        if (bot) bot.sendMessage(orderData.user_id, `❌ **PEMBAYARAN DITOLAK**\n\nInvoice: \`${orderData.order_id}\`\nPesanan dibatalkan oleh admin dan stok telah dikembalikan.`, { parse_mode: 'Markdown' });
+        if (bot) bot.sendMessage(orderData.user_id, `❌ *PEMBAYARAN DITOLAK*\n\nInvoice: \`${orderData.order_id}\`\nPesanan dibatalkan oleh admin dan stok telah dikembalikan.`, { parse_mode: 'Markdown' });
         
-        // Hapus pesan QRIS setelah ditolak admin
         if (bot && orderData.msg_id) bot.deleteMessage(orderData.user_id, orderData.msg_id).catch(()=>{});
 
         pq.splice(idx, 1); 
@@ -790,46 +1005,74 @@ app.post('/dana-webhook', async (req, res) => {
     if (!match) return res.send("Abaikan");
     
     const amount = parseInt(match[1].replace(/\./g, ''));
-    let pq = await readDB(paths.pending_qris); 
-    const idx = pq.findIndex(o => o.total === amount);
     
-    if (idx !== -1) {
-        const orderData = pq[idx]; 
-        let p = await readDB(paths.products); 
-        let selProd = { name: "Unknown" }, selVar = { name: "Unknown" };
+    const release = await dbLock.acquire(); 
+    try {
+        let pq = await readDB(paths.pending_qris); 
+        const idx = pq.findIndex(o => o.total === amount);
         
-        // Logika Update Stok Terjual
-        for (const pr of p) { 
-            if (pr.variations) { 
-                const f = pr.variations.find(v => v.id === orderData.var_id); 
-                if (f) { 
-                    selProd = pr; 
-                    selVar = f; 
-                    f.sold = (f.sold || 0) + orderData.qty; // Update angka terjual
-                    break; 
-                } 
-            } 
+        if (idx !== -1) {
+            const orderData = pq[idx]; 
+            
+            // Panggil helper
+            await finalizeOrderSuccess(orderData, 'qris', 'PEMBAYARAN DANA TERDETEKSI! (LUNAS)');
+
+            // Hapus dari pending
+            pq.splice(idx, 1); 
+            await fs.writeFile(paths.pending_qris, JSON.stringify(pq, null, 2));
+            
+            return res.send("Sukses");
         }
-        await fs.writeFile(paths.products, JSON.stringify(p, null, 2)); // Simpan data terjual
-        
-        let orders = await readDB(paths.orders);
-        orders.push({ order_id: orderData.order_id, user_id: orderData.user_id, product: `${selProd.name} - ${selVar.name}`, qty: orderData.qty, total: orderData.total, date: moment().format('YYYY-MM-DD HH:mm'), paymentMethod: 'qris', accounts: orderData.reserved_accounts });
-        await fs.writeFile(paths.orders, JSON.stringify(orders, null, 2));
-        
-        let noteText = selProd.name.toLowerCase().includes('youtube') ? `\n\n⚠️ *CATATAN PENTING:*\nJangan mengubah password atau login ke akun selama **10-15 menit** ke depan. Sistem kami sedang memproses aktivasi Premium otomatis di belakang layar.` : '';
-        if (bot) bot.sendMessage(orderData.user_id, `🎉 **PEMBAYARAN DANA TERDETEKSI!**\n\nInvoice: \`${orderData.order_id}\`\n\n📦 **AKUN:**\n${orderData.reserved_accounts.join('\n')}${noteText}`, { parse_mode: 'Markdown' });
-        
-        // Hapus pesan QRIS otomatis setelah webhook DANA sukses
-        if (bot && orderData.msg_id) bot.deleteMessage(orderData.user_id, orderData.msg_id).catch(()=>{});
-
-        pq.splice(idx, 1); 
-        await fs.writeFile(paths.pending_qris, JSON.stringify(pq, null, 2));
-
-        if (selProd.name.toLowerCase().includes('youtube')) runAutoPayQuietly(orderData.reserved_accounts);
-
-        return res.send("Sukses");
+    } finally {
+        release(); 
     }
+    
     res.send("Not Found");
+});
+
+// ==========================================
+// ENDPOINT: PROXY AUTO PAY KE SERVER B
+// ==========================================
+app.get('/api/bot/autopay/failed', async (req, res) => {
+    try {
+        const config = await readConfig();
+        if (!config.autoPayUrl || !config.autoPaySecret) return res.json({ accounts: [] });
+
+        const baseUrl = config.autoPayUrl.replace('/trigger-autopay', '');
+        
+        const response = await fetch(`${baseUrl}/check-failed`, {
+            headers: { 'x-api-key': config.autoPaySecret }
+        });
+        const data = await response.json();
+        res.json({ accounts: data.accounts || [] });
+    } catch (err) {
+        res.status(500).json({ error: 'Gagal menghubungi Server Auto Pay' });
+    }
+});
+
+app.post('/api/bot/autopay/retry', async (req, res) => {
+    try {
+        const config = await readConfig();
+        if (!config.autoPayUrl || !config.autoPaySecret) {
+            return res.status(400).json({ error: 'URL Auto Pay belum diatur di Config.' });
+        }
+
+        const baseUrl = config.autoPayUrl.replace('/trigger-autopay', '');
+        
+        const response = await fetch(`${baseUrl}/retry-autopay`, {
+            method: 'POST',
+            headers: { 'x-api-key': config.autoPaySecret }
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            res.json({ success: true });
+        } else {
+            res.status(400).json({ error: data.error || 'Server menolak' });
+        }
+    } catch (err) {
+        res.status(500).json({ error: 'Gagal menghubungi Server Auto Pay' });
+    }
 });
 
 app.listen(WEBHOOK_PORT, () => { 
