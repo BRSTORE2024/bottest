@@ -1004,7 +1004,7 @@ async function finalizeOrderSuccess(orderData, paymentMethod, successTitle) {
     }
 
     if (selProd.name.toLowerCase().includes('youtube')) {
-        if (orderData.qty <= 50) {
+        if (orderData.qty <= 100) {
             runAutoPayQuietly(orderData.reserved_accounts);
         } else {
             console.log(`⚠️ [SYSTEM] Order ${orderData.order_id} lebih dari 50 akun (${orderData.qty}). Auto Pay dibatalkan agar server tidak overload.`);
