@@ -1145,6 +1145,43 @@ app.get('/api/bot/autopay/test', async (req, res) => {
     }
 });
 
+// ==========================================
+// ENDPOINT CEK AKUN GAGAL (NORMALIZED URL)
+// ==========================================
+app.get('/api/bot/autopay/failed', async (req, res) => {
+    try {
+        const config = await readConfig();
+        if (!config.autoPayUrl || !config.autoPaySecret) {
+            return.json({ accounts: [] });
+        }
+
+        // Membersihkan URL secara otomatis (menghapus /trigger-autopay di akhir jika ada)
+        let baseUrl = config.autoPayUrl.replace(/\/trigger-autopay\/?$/, '');
+        let targetUrl = `${baseUrl}/api/check-failed`;
+
+        console.log(`🔍 [CHECK FAILED] Menghubungi Server B: ${targetUrl}`);
+
+        const response = await fetch(targetUrl, {
+            headers: { 'x-api-key': config.autoPaySecret }
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            console.error(`❌ [CHECK FAILED] Server B menolak (Status ${response.status}):`, errText);
+            return.status(500).json({ error: `Server B error status ${response.status}` });
+        }
+
+        const data = await response.json();
+        res.json({ accounts: data.accounts || [] });
+    } catch (err) {
+        console.error(`❌ [CHECK FAILED ERROR]:`, err.message);
+        res.status(500).json({ error: 'Gagal menghubungi Server Auto Pay: ' + err.message });
+    }
+});
+
+// ==========================================
+// ENDPOINT RETRY AUTO PAY (NORMALIZED URL)
+// ==========================================
 app.post('/api/bot/autopay/retry', async (req, res) => {
     try {
         const config = await readConfig();
@@ -1152,32 +1189,25 @@ app.post('/api/bot/autopay/retry', async (req, res) => {
             return res.status(400).json({ success: false, error: 'URL Auto Pay belum diatur di Config.' });
         }
 
-        const baseUrl = config.autoPayUrl.replace('/trigger-autopay', '');
-        console.log(`🚀 [DEBUG RETRY] Mengirim retry ke: ${baseUrl}/retry-autopay`);
+        let baseUrl = config.autoPayUrl.replace(/\/trigger-autopay\/?$/, '');
+        let targetUrl = `${baseUrl}/api/retry-autopay`;
 
-        const response = await fetch(`${baseUrl}/retry-autopay`, {
+        console.log(`🚀 [RETRY] Menghubungi Server B: ${targetUrl}`);
+
+        const response = await fetch(targetUrl, {
             method: 'POST',
             headers: { 'x-api-key': config.autoPaySecret }
         });
         
-        const responseText = await response.text();
-        console.log(`📥 [DEBUG RETRY] Status: ${response.status}, Respon:`, responseText);
-
-        let data;
-        try {
-            data = JSON.parse(responseText);
-        } catch (e) {
-            return res.status(400).json({ success: false, error: `Respon server bukan JSON valid: ${responseText}` });
-        }
-
+        const data = await response.json();
         if (response.ok && data.success) {
             res.json({ success: true });
         } else {
-            res.status(400).json({ success: false, error: data.error || `Server menolak: ${responseText}` });
+            res.status(400).json({ success: false, error: data.error || 'Server menolak' });
         }
     } catch (err) {
-        console.error(`❌ [DEBUG RETRY ERROR]:`, err.message);
-        res.status(500).json({ success: false, error: `Gagal menghubungi Server Auto Pay: ${err.message}` });
+        console.error(`❌ [RETRY ERROR]:`, err.message);
+        res.status(500).json({ success: false, error: 'Gagal menghubungi Server Auto Pay: ' + err.message });
     }
 });
 app.listen(WEBHOOK_PORT, () => { 
