@@ -1102,19 +1102,46 @@ app.post('/dana-webhook', async (req, res) => {
 // ==========================================
 // ENDPOINT: PROXY AUTO PAY & AKUN GAGAL
 // ==========================================
-app.get('/api/bot/autopay/failed', async (req, res) => {
+app.get('/api/bot/autopay/test', async (req, res) => {
     try {
         const config = await readConfig();
-        if (!config.autoPayUrl || !config.autoPaySecret) return res.json({ accounts: [] });
+        if (!config.autoPayUrl || !config.autoPaySecret) {
+            return res.json({ 
+                success: false, 
+                error: 'URL Auto Pay atau API Secret belum diatur di Config.' 
+            });
+        }
 
         const baseUrl = config.autoPayUrl.replace('/trigger-autopay', '');
+        console.log(`🔍 [DEBUG TEST] Mencoba menghubungi: ${baseUrl}/check-failed`);
+
         const response = await fetch(`${baseUrl}/check-failed`, {
-            headers: { 'x-api-key': config.autoPaySecret }
+            method: 'GET',
+            headers: { 
+                'x-api-key': config.autoPaySecret 
+            }
         });
-        const data = await response.json();
-        res.json({ accounts: data.accounts || [] });
+
+        const responseText = await response.text();
+        console.log(`📥 [DEBUG TEST] Status: ${response.status}, Respon:`, responseText);
+
+        if (response.ok) {
+            return res.json({ 
+                success: true, 
+                message: 'API berhasil terhubung dan merespons dengan baik!' 
+            });
+        } else {
+            return res.json({ 
+                success: false, 
+                error: `Server menolak (Status ${response.status}): ${responseText}` 
+            });
+        }
     } catch (err) {
-        res.status(500).json({ error: 'Gagal menghubungi Server Auto Pay' });
+        console.error(`❌ [DEBUG TEST ERROR]:`, err.message);
+        return res.json({ 
+            success: false, 
+            error: `Gagal terhubung / Fetch Error: ${err.message}` 
+        });
     }
 });
 
@@ -1122,26 +1149,37 @@ app.post('/api/bot/autopay/retry', async (req, res) => {
     try {
         const config = await readConfig();
         if (!config.autoPayUrl || !config.autoPaySecret) {
-            return res.status(400).json({ error: 'URL Auto Pay belum diatur di Config.' });
+            return res.status(400).json({ success: false, error: 'URL Auto Pay belum diatur di Config.' });
         }
 
         const baseUrl = config.autoPayUrl.replace('/trigger-autopay', '');
+        console.log(`🚀 [DEBUG RETRY] Mengirim retry ke: ${baseUrl}/retry-autopay`);
+
         const response = await fetch(`${baseUrl}/retry-autopay`, {
             method: 'POST',
             headers: { 'x-api-key': config.autoPaySecret }
         });
         
-        const data = await response.json();
-        if (data.success) {
+        const responseText = await response.text();
+        console.log(`📥 [DEBUG RETRY] Status: ${response.status}, Respon:`, responseText);
+
+        let data;
+        try {
+            data = JSON.parse(responseText);
+        } catch (e) {
+            return res.status(400).json({ success: false, error: `Respon server bukan JSON valid: ${responseText}` });
+        }
+
+        if (response.ok && data.success) {
             res.json({ success: true });
         } else {
-            res.status(400).json({ error: data.error || 'Server menolak' });
+            res.status(400).json({ success: false, error: data.error || `Server menolak: ${responseText}` });
         }
     } catch (err) {
-        res.status(500).json({ error: 'Gagal menghubungi Server Auto Pay' });
+        console.error(`❌ [DEBUG RETRY ERROR]:`, err.message);
+        res.status(500).json({ success: false, error: `Gagal menghubungi Server Auto Pay: ${err.message}` });
     }
 });
-
 app.listen(WEBHOOK_PORT, () => { 
     console.log(`🌐 Web Dashboard & Server Webhook aktif di: http://localhost:${WEBHOOK_PORT}`); 
     initDB(); 
