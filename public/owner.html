@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8"><title>Owner Panel - BR STORE</title>
+<style>
+  body { font-family: sans-serif; background: #0a0a0a; color: #fff; display: flex; margin: 0; height: 100vh; }
+  .sidebar { width: 220px; background: #111; padding: 20px; border-right: 1px solid #222;}
+  .main { flex: 1; padding: 30px; overflow-y: auto;}
+  .card { background: #111; padding: 20px; border-radius: 10px; border: 1px solid #333; margin-bottom: 20px;}
+  button { padding: 10px; background: #58a6ff; border: none; border-radius: 5px; color: #fff; cursor: pointer; width: 100%; margin-top:10px; font-weight: bold;}
+  input { width: 100%; padding: 10px; margin: 5px 0 15px; border-radius: 5px; border: 1px solid #333; background: #000; color: #fff; box-sizing: border-box; }
+  label { font-size: 13px; color: #8b949e; font-weight: bold; display: block; margin-bottom: 5px; }
+  h2 { margin-top: 0; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <h3>OWNER PANEL</h3>
+  <p style="color:#3fb950; font-size:12px">● Status Bot Berjalan</p>
+  <button onclick="window.location.href='/admin'">Ke Halaman Admin</button>
+  <button onclick="logout()" style="background:#f78166">Logout</button>
+</div>
+<div class="main">
+  <h2>Keamanan (Ganti Akses Login)</h2>
+  <p style="color:#8b949e; font-size: 14px; margin-bottom: 20px;">Ubah username dan password default kamu di sini agar aman saat diakses secara publik menggunakan Cloudflare Tunnel.</p>
+  
+  <div class="card" style="max-width: 500px;">
+    <form id="profileForm">
+      <label>Password Saat Ini (Wajib)</label>
+      <input type="password" id="currentPass" required placeholder="Masukkan password saat ini">
+      
+      <label>Username Baru (Opsional)</label>
+      <input type="text" id="newUsername" placeholder="Masukkan username baru">
+      
+      <label>Password Baru (Opsional)</label>
+      <input type="password" id="newPass" placeholder="Biarkan kosong jika tidak ingin diubah">
+      
+      <button type="submit" style="background: #3fb950;">Simpan Perubahan</button>
+    </form>
+  </div>
+</div>
+
+<script>
+  document.getElementById('profileForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.textContent = "Menyimpan...";
+    btn.disabled = true;
+
+    const currentPassword = document.getElementById('currentPass').value;
+    const username = document.getElementById('newUsername').value;
+    const password = document.getElementById('newPass').value;
+
+    try {
+        const res = await fetch('/api/auth/change-profile', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword, username, password })
+        });
+        const data = await res.json();
+        
+        if(res.ok && data.success) {
+          alert('✅ Profil berhasil diperbarui! Silakan login kembali dengan akses baru kamu.');
+          logout();
+        } else {
+          alert('❌ Gagal: ' + data.error);
+        }
+    } catch(err) {
+        alert('❌ Terjadi kesalahan koneksi.');
+    } finally {
+        btn.textContent = "Simpan Perubahan";
+        btn.disabled = false;
+    }
+  });
+
+  async function logout() { 
+      await fetch('/api/auth/logout', { method:'POST'}); 
+      window.location.href='/login'; 
+  }
+</script>
+</body>
+</html>

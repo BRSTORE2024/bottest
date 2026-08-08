@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bot Panel - Authentication</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #050505; --surface: rgba(10,10,10,0.85); --border: rgba(255,255,255,0.08); --accent: #58a6ff; --accent2: #7c5df9; --text: #e6edf3; --text2: #8b949e; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Sora', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+  .bg-grid { position: absolute; inset: 0; z-index: 0; background-size: 40px 40px; background-image: linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.02) 1px, transparent 1px); mask-image: radial-gradient(circle at center, black 30%, transparent 80%); -webkit-mask-image: radial-gradient(circle at center, black 30%, transparent 80%); }
+  .bg-glow { position: absolute; width: 600px; height: 600px; background: radial-gradient(circle, rgba(88,166,255,0.15) 0%, rgba(124,93,249,0.05) 40%, transparent 70%); top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 0; filter: blur(40px); pointer-events: none; }
+  .login-card { background: var(--surface); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--border); border-radius: 20px; padding: 40px; width: 100%; max-width: 420px; position: relative; z-index: 10; box-shadow: 0 24px 60px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1); animation: cardIn .6s cubic-bezier(.34,1.56,.64,1); }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(40px) scale(0.95); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  .logo-box { width: 56px; height: 56px; background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%); border-radius: 14px; display: flex; align-items: center; justify-content: center; margin: 0 auto 24px; box-shadow: 0 8px 24px rgba(88,166,255,0.3); }
+  .logo-box svg { color: #fff; width: 28px; height: 28px; }
+  .title-group { text-align: center; margin-bottom: 32px; }
+  .title { font-size: 24px; font-weight: 700; color: #fff; margin-bottom: 6px; letter-spacing: -0.5px; }
+  .subtitle { font-size: 14px; color: var(--text2); }
+  .form-group { margin-bottom: 20px; position: relative; }
+  .form-label { display: block; font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .input-wrapper { position: relative; }
+  .input-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text2); display: flex; transition: color 0.2s; }
+  .form-input { width: 100%; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 14px 14px 14px 44px; color: #fff; font-size: 14px; font-family: 'Sora', sans-serif; transition: all 0.2s ease; outline: none; }
+  .form-input:focus { border-color: var(--accent); background: rgba(0,0,0,0.8); box-shadow: 0 0 0 4px rgba(88,166,255,0.1); }
+  .form-input:focus + .input-icon, .input-wrapper:focus-within .input-icon { color: var(--accent); }
+  .btn-submit { width: 100%; background: linear-gradient(135deg, var(--accent) 0%, #468ee5 100%); border: none; border-radius: 10px; padding: 14px; color: #fff; font-size: 14px; font-weight: 600; font-family: 'Sora', sans-serif; cursor: pointer; transition: all 0.2s ease; margin-top: 10px; box-shadow: 0 4px 14px rgba(88,166,255,0.3); position: relative; overflow: hidden; }
+  .btn-submit::after { content: ''; position: absolute; top: 0; left: -100%; width: 50%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent); transition: 0.5s; }
+  .btn-submit:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(88,166,255,0.4); }
+  .btn-submit:hover::after { left: 100%; }
+  .error-msg { background: rgba(247,129,102,0.1); border: 1px solid rgba(247,129,102,0.3); color: #f78166; padding: 12px; border-radius: 8px; font-size: 13px; font-weight: 500; margin-bottom: 20px; display: none; align-items: center; gap: 8px; animation: shake 0.4s ease-in-out; }
+  @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+  .footer-text { text-align: center; margin-top: 24px; font-size: 12px; color: var(--text2); }
+</style>
+</head>
+<body>
+  <div class="bg-grid"></div><div class="bg-glow"></div>
+  <div class="login-card">
+    <div class="logo-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg></div>
+    <div class="title-group"><h1 class="title">Welcome Back</h1><p class="subtitle">Sign in to bot control panel</p></div>
+    <div class="error-msg" id="errorMsg"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span id="errorText">Invalid credentials</span></div>
+    
+    <form id="loginForm">
+      <div class="form-group"><label class="form-label">Username</label><div class="input-wrapper"><svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><input type="text" class="form-input" id="username" placeholder="Enter your username" required></div></div>
+      <div class="form-group"><label class="form-label">Password</label><div class="input-wrapper"><svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><input type="password" class="form-input" id="password" placeholder="••••••••" required></div></div>
+      <button type="submit" class="btn-submit" id="submitBtn">Sign In</button>
+    </form>
+    <div class="footer-text">Secure connection to BR STORE panel</div>
+  </div>
+
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('submitBtn');
+      const errBox = document.getElementById('errorMsg');
+      const errTxt = document.getElementById('errorText');
+      
+      errBox.style.display = 'none';
+      btn.textContent = 'Signing in...'; btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: document.getElementById('username').value, password: document.getElementById('password').value })
+        });
+        const data = await res.json();
+        
+        if(res.ok && data.success) {
+            btn.textContent = 'Success!';
+            btn.style.background = 'linear-gradient(135deg, #3fb950 0%, #2ea043 100%)';
+            setTimeout(() => { window.location.href = '/admin'; }, 500); // LANGSUNG KE DASHBOARD ADMIN
+        } else {
+            errTxt.textContent = data.error || 'Login failed.';
+            errBox.style.display = 'flex'; errBox.style.animation = 'none'; errBox.offsetHeight; errBox.style.animation = 'shake 0.4s ease-in-out';
+            btn.textContent = 'Sign In'; btn.disabled = false;
+        }
+      } catch (err) {
+        errTxt.textContent = 'Connection error.'; errBox.style.display = 'flex';
+        btn.textContent = 'Sign In'; btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
