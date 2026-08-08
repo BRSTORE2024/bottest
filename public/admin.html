@@ -199,6 +199,21 @@
         </div>
       </div>
 
+      <!-- PANEL BARU: RETRY AUTO PAY (AKUN GAGAL) -->
+      <div class="card" style="border: 1px solid rgba(255,166,87,0.3);">
+        <div class="card-title" style="margin-bottom:14px; color: var(--accent4);">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>
+          Retry Auto Pay (Akun Gagal)
+        </div>
+        <p style="font-size: 12px; color: var(--text2); margin-bottom: 16px;">Membaca sisa akun yang gagal dari file <code>AKUN.txt</code> dan memicu ulang proses pembayaran di server Puppeteer.</p>
+        <div style="display:flex; gap:10px; margin-bottom: 14px;">
+            <button type="button" class="btn btn-outline-orange" onclick="cekAkunGagal()">Cek Akun Gagal</button>
+            <button type="button" class="btn btn-primary" onclick="retryAutoPay()">Ulangi Pay Sekarang</button>
+        </div>
+        <textarea class="stock-display" id="failedAccountsDisplay" readonly style="display:none; height: 120px;" placeholder="Menunggu data..."></textarea>
+      </div>
+      <!-- END PANEL BARU -->
+
       <div class="card">
         <div class="card-title" style="margin-bottom:18px">Payment Gateway</div>
         <div class="alert alert-info" style="margin-bottom:16px">Sistem QRIS Otomatis. Upload gambar QRIS untuk mengekstrak string, atau paste manual.</div>
@@ -541,7 +556,6 @@
           document.getElementById('qrStringResult').value = config.qrisString || ''; 
           document.getElementById('trxPrefix').value = config.trxPrefix || 'BR'; 
           
-          // UPDATE: Load data auto pay url dan secret
           document.getElementById('autoPayUrl').value = config.autoPayUrl || ''; 
           document.getElementById('autoPaySecret').value = config.autoPaySecret || ''; 
       } catch (e) { } 
@@ -576,6 +590,45 @@
       reader.readAsDataURL(fileInput.files[0]); 
   }
 
+  // --- FUNGSI BARU: CEK AKUN GAGAL & RETRY ---
+  async function cekAkunGagal() {
+      try {
+          const res = await fetch('/api/bot/autopay/failed');
+          const data = await res.json();
+          const textarea = document.getElementById('failedAccountsDisplay');
+          textarea.style.display = 'block';
+
+          if (res.ok && data.accounts && data.accounts.length > 0) {
+              textarea.value = data.accounts.join('\n');
+              showToast(`✅ Ditemukan ${data.accounts.length} akun gagal di AKUN.txt.`);
+          } else {
+              textarea.value = "✅ Tidak ada akun gagal. AKUN.txt bersih atau kosong.";
+              showToast('✅ Semua akun sukses (File kosong)!');
+          }
+      } catch (e) {
+          showToast('❌ Gagal membaca file AKUN.txt dari server backend.', 'error');
+      }
+  }
+
+  async function retryAutoPay() {
+      if (!confirm('Kirim ulang semua akun yang tersisa di AKUN.txt ke server Auto Pay?')) return;
+      
+      try {
+          const res = await fetch('/api/bot/autopay/retry', { method: 'POST' });
+          const data = await res.json();
+          
+          if (res.ok && data.success) {
+              showToast('✅ Perintah Ulangi Pay berhasil dikirim ke server!');
+              setTimeout(cekAkunGagal, 2500); 
+          } else {
+              showToast('❌ Gagal: ' + (data.error || 'Server menolak perintah.'), 'error');
+          }
+      } catch (e) {
+          showToast('❌ Terjadi kesalahan jaringan.', 'error');
+      }
+  }
+  // -------------------------------------------
+
   document.getElementById('configForm').addEventListener('submit', async e => { 
       e.preventDefault(); 
       const config = { 
@@ -584,8 +637,8 @@
           adminId: document.getElementById('adminId').value, 
           qrisString: document.getElementById('qrStringResult').value, 
           trxPrefix: document.getElementById('trxPrefix').value,
-          autoPayUrl: document.getElementById('autoPayUrl').value,      // UPDATE: Tambahan parameter
-          autoPaySecret: document.getElementById('autoPaySecret').value // UPDATE: Tambahan parameter
+          autoPayUrl: document.getElementById('autoPayUrl').value,      
+          autoPaySecret: document.getElementById('autoPaySecret').value 
       }; 
       try { 
           await fetch(`/api/bot/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }); 
