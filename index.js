@@ -115,7 +115,7 @@ async function cleanupExpiredQris() {
                     if (bot && order.user_id) {
                         bot.sendMessage(order.user_id, `⚠️ *Batal Otomatis*\n\nPesanan \`${order.order_id}\` dibatalkan (Melebihi batas waktu 5 menit atau sistem di-restart). Stok telah dikembalikan ke etalase.`, { parse_mode: 'Markdown' }).catch(()=>{});
                         
-                        // [FITUR BARU] Hapus pesan QRIS saat order kedaluwarsa
+                        // Hapus pesan QRIS saat order kedaluwarsa
                         if (order.msg_id) {
                             bot.deleteMessage(order.user_id, order.msg_id).catch(()=>{});
                         }
@@ -238,7 +238,8 @@ async function setupTelegramBot() {
         let btns = [];
         
         product.variations.forEach(v => {
-            text += `• ${v.name} : Rp ${v.price.toLocaleString('id-ID')}\n`;
+            // Tampilan terjual di bot Telegram
+            text += `• ${v.name} : Rp ${v.price.toLocaleString('id-ID')} | 🔥 Terjual: ${v.sold || 0}\n`;
             if (v.wholesaleMinQty && v.wholesalePrice) {
                 text += `  └ _(Beli min. ${v.wholesaleMinQty} otomatis jadi Rp ${v.wholesalePrice.toLocaleString('id-ID')}/item)_\n`;
             }
@@ -422,6 +423,18 @@ async function setupTelegramBot() {
                     
                     orders.push({ order_id: oid, user_id: user.id, product: `${selProd.name} - ${selVar.name}`, qty: finalQty, total: basePrice, date: moment().format('YYYY-MM-DD HH:mm'), paymentMethod: 'balance', accounts: accs });
                     await fs.writeFile(paths.orders, JSON.stringify(orders, null, 2));
+
+                    // LOGIKA UPDATE TERJUAL SAAT BAYAR VIA SALDO
+                    let pData = await readDB(paths.products);
+                    for (let pd of pData) {
+                        let vr = pd.variations && pd.variations.find(x => x.id === selVar.id);
+                        if (vr) { 
+                            vr.sold = (vr.sold || 0) + finalQty; 
+                            break; 
+                        }
+                    }
+                    await fs.writeFile(paths.products, JSON.stringify(pData, null, 2));
+                    // ------------------------------------------
                     
                     let noteText = selProd.name.toLowerCase().includes('youtube') ? `\n\n⚠️ *CATATAN PENTING:*\nJangan mengubah password atau login ke akun selama **10-15 menit** ke depan. Sistem kami sedang memproses aktivasi Premium otomatis di belakang layar.` : '';
                     bot.sendMessage(chatId, `✅ **LUNAS** ✅\nInvoice: \`${oid}\`\n\n📦 **AKUN:**\n${accs.join('\n')}${noteText}`, { parse_mode: 'Markdown' });
@@ -449,7 +462,7 @@ async function setupTelegramBot() {
                     const oid = `${prefix}-${Date.now()}`;
                     const dynamicQrisString = makeDynamicQris(cfg.qrisString, finalTotal);
                     
-                    // [FITUR BARU] Siapkan object pesanan terlebih dahulu tanpa disave
+                    // Siapkan object pesanan dengan tambahan msg_id
                     let newPendingOrder = { 
                         order_id: oid, 
                         user_id: query.from.id, 
@@ -468,10 +481,9 @@ async function setupTelegramBot() {
                     bot.answerCallbackQuery(query.id); 
                     bot.deleteMessage(chatId, msgId).catch(()=>{});
                     
-                    // [FITUR BARU] Kirim pesan QRIS lalu tangkap message_id nya
+                    // Kirim pesan QRIS lalu tangkap message_id nya
                     const sentMsg = await bot.sendPhoto(chatId, qrUrl, { caption: cap, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: 'Batalkan', callback_data: `batal_qris|${oid}` }]] } });
                     
-                    // [FITUR BARU] Masukkan message_id ke dalam object, lalu simpan ke database
                     newPendingOrder.msg_id = sentMsg.message_id;
                     let pq = await readDB(paths.pending_qris);
                     pq.push(newPendingOrder);
@@ -605,7 +617,8 @@ app.post('/api/bot/products/:slug/variations', async (req, res) => {
     let p = await readDB(paths.products); 
     const f = p.find(x => x.slug === req.params.slug);
     if(f) { 
-        f.variations.push({ id: `var_${Date.now()}`, ...req.body, price: parseInt(req.body.price), wholesaleMinQty: null, wholesalePrice: null }); 
+        // Tambahan properti sold: 0 untuk variasi baru
+        f.variations.push({ id: `var_${Date.now()}`, ...req.body, price: parseInt(req.body.price), wholesaleMinQty: null, wholesalePrice: null, sold: 0 }); 
         await fs.writeFile(paths.products, JSON.stringify(p, null, 2)); 
     }
     res.json({ success: true });
@@ -695,9 +708,15 @@ app.post('/api/bot/pending/:id/approve', async (req, res) => {
         for (const pr of p) { 
             if (pr.variations) { 
                 const f = pr.variations.find(v => v.id === orderData.var_id); 
-                if (f) { selProd = pr; selVar = f; break; } 
+                if (f) { 
+                    selProd = pr; 
+                    selVar = f; 
+                    f.sold = (f.sold || 0) + orderData.qty; // Update Terjual
+                    break; 
+                } 
             } 
         }
+        await fs.writeFile(paths.products, JSON.stringify(p, null, 2)); // Simpan data terjual
         
         let orders = await readDB(paths.orders);
         orders.push({ 
@@ -715,7 +734,7 @@ app.post('/api/bot/pending/:id/approve', async (req, res) => {
         let noteText = selProd.name.toLowerCase().includes('youtube') ? `\n\n⚠️ *CATATAN PENTING:*\nJangan mengubah password atau login ke akun selama **10-15 menit** ke depan. Sistem kami sedang memproses aktivasi Premium otomatis di belakang layar.` : '';
         if (bot) bot.sendMessage(orderData.user_id, `🎉 **PEMBAYARAN DISETUJUI MANUAL!**\n\nInvoice: \`${orderData.order_id}\`\n\n📦 **AKUN:**\n${orderData.reserved_accounts.join('\n')}${noteText}`, { parse_mode: 'Markdown' });
         
-        // [FITUR BARU] Hapus pesan QRIS setelah disetujui admin
+        // Hapus pesan QRIS setelah disetujui admin
         if (bot && orderData.msg_id) bot.deleteMessage(orderData.user_id, orderData.msg_id).catch(()=>{});
 
         pq.splice(idx, 1); 
@@ -742,7 +761,7 @@ app.post('/api/bot/pending/:id/reject', async (req, res) => {
         
         if (bot) bot.sendMessage(orderData.user_id, `❌ **PEMBAYARAN DITOLAK**\n\nInvoice: \`${orderData.order_id}\`\nPesanan dibatalkan oleh admin dan stok telah dikembalikan.`, { parse_mode: 'Markdown' });
         
-        // [FITUR BARU] Hapus pesan QRIS setelah ditolak admin
+        // Hapus pesan QRIS setelah ditolak admin
         if (bot && orderData.msg_id) bot.deleteMessage(orderData.user_id, orderData.msg_id).catch(()=>{});
 
         pq.splice(idx, 1); 
@@ -778,12 +797,20 @@ app.post('/dana-webhook', async (req, res) => {
         const orderData = pq[idx]; 
         let p = await readDB(paths.products); 
         let selProd = { name: "Unknown" }, selVar = { name: "Unknown" };
+        
+        // Logika Update Stok Terjual
         for (const pr of p) { 
             if (pr.variations) { 
                 const f = pr.variations.find(v => v.id === orderData.var_id); 
-                if (f) { selProd = pr; selVar = f; break; } 
+                if (f) { 
+                    selProd = pr; 
+                    selVar = f; 
+                    f.sold = (f.sold || 0) + orderData.qty; // Update angka terjual
+                    break; 
+                } 
             } 
         }
+        await fs.writeFile(paths.products, JSON.stringify(p, null, 2)); // Simpan data terjual
         
         let orders = await readDB(paths.orders);
         orders.push({ order_id: orderData.order_id, user_id: orderData.user_id, product: `${selProd.name} - ${selVar.name}`, qty: orderData.qty, total: orderData.total, date: moment().format('YYYY-MM-DD HH:mm'), paymentMethod: 'qris', accounts: orderData.reserved_accounts });
@@ -792,7 +819,7 @@ app.post('/dana-webhook', async (req, res) => {
         let noteText = selProd.name.toLowerCase().includes('youtube') ? `\n\n⚠️ *CATATAN PENTING:*\nJangan mengubah password atau login ke akun selama **10-15 menit** ke depan. Sistem kami sedang memproses aktivasi Premium otomatis di belakang layar.` : '';
         if (bot) bot.sendMessage(orderData.user_id, `🎉 **PEMBAYARAN DANA TERDETEKSI!**\n\nInvoice: \`${orderData.order_id}\`\n\n📦 **AKUN:**\n${orderData.reserved_accounts.join('\n')}${noteText}`, { parse_mode: 'Markdown' });
         
-        // [FITUR BARU] Hapus pesan QRIS otomatis setelah webhook DANA sukses
+        // Hapus pesan QRIS otomatis setelah webhook DANA sukses
         if (bot && orderData.msg_id) bot.deleteMessage(orderData.user_id, orderData.msg_id).catch(()=>{});
 
         pq.splice(idx, 1); 
