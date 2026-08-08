@@ -1152,30 +1152,28 @@ app.get('/api/bot/autopay/failed', async (req, res) => {
     try {
         const config = await readConfig();
         if (!config.autoPayUrl || !config.autoPaySecret) {
-            return.json({ accounts: [] });
+            return res.json({ accounts: [] });
         }
 
-        // Membersihkan URL secara otomatis (menghapus /trigger-autopay di akhir jika ada)
-        let baseUrl = config.autoPayUrl.replace(/\/trigger-autopay\/?$/, '');
+        let baseUrl = config.autoPayUrl.replace(/\/api\/trigger-autopay\/?$/, '').replace(/\/trigger-autopay\/?$/, '');
         let targetUrl = `${baseUrl}/api/check-failed`;
 
-        console.log(`🔍 [CHECK FAILED] Menghubungi Server B: ${targetUrl}`);
-
         const response = await fetch(targetUrl, {
+            method: 'GET',
             headers: { 'x-api-key': config.autoPaySecret }
         });
 
-        if (!response.ok) {
-            const errText = await response.text();
-            console.error(`❌ [CHECK FAILED] Server B menolak (Status ${response.status}):`, errText);
-            return.status(500).json({ error: `Server B error status ${response.status}` });
+        const responseText = await response.text();
+        
+        try {
+            const data = JSON.parse(responseText);
+            return res.json({ accounts: data.accounts || [] });
+        } catch (e) {
+            return res.json({ accounts: [] });
         }
-
-        const data = await response.json();
-        res.json({ accounts: data.accounts || [] });
     } catch (err) {
         console.error(`❌ [CHECK FAILED ERROR]:`, err.message);
-        res.status(500).json({ error: 'Gagal menghubungi Server Auto Pay: ' + err.message });
+        return res.json({ accounts: [] });
     }
 });
 
