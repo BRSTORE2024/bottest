@@ -114,7 +114,7 @@ async function sendDatabaseBackup(targetChatId = null) {
 }
 
 // ==========================================
-// FUNGSI API AUTO PAY KE SERVER B
+// FUNGSI API AUTO PAY KE SERVER B & AKUN GAGAL
 // ==========================================
 async function runAutoPayQuietly(accounts) {
     const config = await readConfig();
@@ -305,14 +305,21 @@ async function setupTelegramBot() {
         } 
     }
 
-    // --- FUNGSI REUSABLE UNTUK MENU UTAMA (SESUAI GAMBAR REFERENSI)[cite: 4] ---
+    // --- FUNGSI MENU UTAMA ---
     async function sendMainMenu(chatId, fromUser, page = 1, editMsgId = null) {
         const release = await dbLock.acquire(); 
         try {
             let users = await readDB(paths.users); 
             let user = users.find(u => u.id === fromUser.id);
             if (!user) { 
-                user = { id: fromUser.id, username: fromUser.username, first_name: fromUser.first_name, balance: 0, trx_count: 0, joined_at: moment().format('YYYY-MM-DD HH:mm:ss') }; 
+                user = { 
+                    id: fromUser.id, 
+                    username: fromUser.username || "", 
+                    first_name: fromUser.first_name || "", 
+                    balance: 0, 
+                    trx_count: 0, 
+                    joined_at: moment().format('YYYY-MM-DD HH:mm:ss') 
+                }; 
                 users.push(user); 
                 await fs.writeFile(paths.users, JSON.stringify(users, null, 2)); 
             }
@@ -355,7 +362,6 @@ async function setupTelegramBot() {
                 reply_markup: { inline_keyboard: inlineLayout } 
             };
 
-            // Keyboard Bawah (Reply Keyboard) untuk Angka[cite: 4]
             let numBtns = [];
             for (let i = 1; i <= products.length; i++) {
                 numBtns.push({ text: i.toString() });
@@ -363,15 +369,9 @@ async function setupTelegramBot() {
             let bottomLayout = chunkArray(numBtns, 5); 
             bottomLayout.unshift([{ text: '🏷️ Daftar Produk' }, { text: `💰 Saldo: Rp ${(user.balance || 0).toLocaleString('id-ID')}` }]); 
 
-            const replyMarkupData = {
-                keyboard: bottomLayout,
-                resize_keyboard: true
-            };
-
             if (editMsgId) {
                 bot.editMessageText(txt, { chat_id: chatId, message_id: editMsgId, ...options }).catch(()=>{});
             } else {
-                // Langsung kirim satu pesan utuh yang membawa teks, inline button, dan keyboard bawah sekaligus[cite: 4]
                 bot.sendMessage(chatId, txt, {
                     ...options,
                     reply_markup: {
@@ -456,7 +456,6 @@ async function setupTelegramBot() {
         return sendMainMenu(msg.chat.id, msg.from, 1);
     });
 
-    // Perintah backup manual via Telegram admin (`/backup`)
     bot.onText(/\/backup/, async (msg) => {
         const config = await readConfig();
         if (config.adminId && msg.from.id.toString() === config.adminId.toString()) {
@@ -468,11 +467,12 @@ async function setupTelegramBot() {
     });
 
     bot.on('message', async (msg) => {
+        if (!msg.text) return;
         const chatId = msg.chat.id;
 
         if (msg.text === '🏷️ Daftar Produk' || msg.text === '🏠 Menu Utama' || msg.text === '🏷️ List Produk') {
             return sendMainMenu(chatId, msg.from, 1); 
-        } else if (msg.text === '💰 Cek Saldo' || (msg.text && msg.text.startsWith('💰 Saldo:'))) {
+        } else if (msg.text === '💰 Cek Saldo' || msg.text.startsWith('💰 Saldo:')) {
             let users = await readDB(paths.users); 
             let user = users.find(u => u.id === msg.from.id) || { balance: 0 };
             bot.sendMessage(msg.chat.id, `Saldo Akun Anda: **Rp ${(user.balance || 0).toLocaleString('id-ID')}**`, { parse_mode: 'Markdown' }); 
@@ -529,9 +529,8 @@ async function setupTelegramBot() {
         }
     });
 
-    // Menangani ketikan angka manual dari keyboard bawah[cite: 4]
     bot.onText(/^(\d+)$/, async (msg, match) => {
-        if (msg.reply_to_message) return; // Mencegah konflik
+        if (msg.reply_to_message) return;
         
         let products = await readDB(paths.products);
         let num = parseInt(match[1]);
@@ -605,7 +604,7 @@ async function setupTelegramBot() {
             } 
         }
         
-        if (!selVar && action !== 'main_page' && action !== 'back_main' && action !== 'back_var' && action !== 'refresh_var' && action !== 'batal_qris') {
+        if (!selVar && action !== 'main_page' && action !== 'back_main' && action !== 'back_var' && action !== 'batal_qris') {
             return bot.answerCallbackQuery(query.id, { text: "Error: Variasi tidak ditemukan" });
         }
         const stockCount = selVar ? await getStockCount(selVar.id) : 0;
@@ -648,7 +647,7 @@ async function setupTelegramBot() {
                     let userIndex = users.findIndex(u => u.id === query.from.id); 
                     let user = users[userIndex];
                     
-                    if ((user.balance || 0) < basePrice) {
+                    if (!user || (user.balance || 0) < basePrice) {
                         bot.answerCallbackQuery(query.id, { text: "❌ Saldo Anda tidak mencukupi untuk pembelian ini.", show_alert: true });
                         return bot.sendMessage(chatId, `❌ Saldo Anda tidak mencukupi.`);
                     }
@@ -679,7 +678,6 @@ async function setupTelegramBot() {
                     }
                     await fs.writeFile(paths.products, JSON.stringify(pData, null, 2));
                     
-                    // Panggil helper
                     await finalizeOrderSuccess({
                         order_id: oid,
                         user_id: user.id,
@@ -860,7 +858,6 @@ app.delete('/api/bot/products/:slug', async (req, res) => {
     res.json({ success: true });
 });
 
-// API Variasi & Diskon Grosir
 app.post('/api/bot/products/:slug/variations', async (req, res) => {
     let p = await readDB(paths.products); 
     const f = p.find(x => x.slug === req.params.slug);
@@ -889,7 +886,6 @@ app.put('/api/bot/products/:slug/variations/:varId', async (req, res) => {
                     v.wholesalePrice = parseInt(req.body.wholesale.price);
                 }
             }
-            
             await fs.writeFile(paths.products, JSON.stringify(p, null, 2));
         }
     }
@@ -919,19 +915,231 @@ app.post('/api/bot/stock/:id', async (req, res) => {
     res.json({ success: true }); 
 });
 
+// Endpoint Users disesuaikan dengan template baru (id, first_name, joined_at)
 app.get('/api/bot/users', async (req, res) => { 
     const users = await readDB(paths.users); 
-    res.json(users.map(u => ({ userId: u.id, username: u.username, firstName: u.first_name, firstSeen: u.joined_at, balance: u.balance || 0 }))); 
+    res.json(users.map(u => ({ 
+        userId: u.id, 
+        username: u.username || "", 
+        firstName: u.first_name || "—", 
+        firstSeen: u.joined_at || "—", 
+        balance: u.balance || 0 
+    }))); 
 });
 
 app.post('/api/bot/balance/:id/add', async (req, res) => { 
     let u = await readDB(paths.users); 
-    const i = u.findIndex(x => x.id === parseInt(req.params.id)); 
+    const targetId = parseInt(req.params.id);
+    const i = u.findIndex(x => x.id === targetId); 
     if(i > -1) { 
         u[i].balance = (u[i].balance || 0) + parseInt(req.body.amount); 
         await fs.writeFile(paths.users, JSON.stringify(u, null, 2)); 
     } 
     res.json({ success: true }); 
+});
+
+// ==========================================
+// HELPER: PROSES PESANAN SUKSES
+// ==========================================
+async function finalizeOrderSuccess(orderData, paymentMethod, successTitle) {
+    const config = await readConfig();
+    let p = await readDB(paths.products); 
+    let selProd = { name: "Unknown" }, selVar = { name: "Unknown" };
+    
+    for (const pr of p) { 
+        if (pr.variations) { 
+            const f = pr.variations.find(v => v.id === orderData.var_id); 
+            if (f) { 
+                selProd = pr; 
+                selVar = f; 
+                f.sold = (f.sold || 0) + orderData.qty; 
+                break; 
+            } 
+        } 
+    }
+    await fs.writeFile(paths.products, JSON.stringify(p, null, 2));
+    
+    let orders = await readDB(paths.orders);
+    orders.push({ 
+        order_id: orderData.order_id, 
+        user_id: orderData.user_id, 
+        product: `${selProd.name} - ${selVar.name}`, 
+        qty: orderData.qty, 
+        total: orderData.total, 
+        date: moment().format('YYYY-MM-DD HH:mm'), 
+        paymentMethod: paymentMethod,
+        accounts: orderData.reserved_accounts 
+    });
+    await fs.writeFile(paths.orders, JSON.stringify(orders, null, 2));
+    
+    let noteText = selProd.name.toLowerCase().includes('youtube') ? `\n\n⚠️ *CATATAN PENTING:*\nJangan mengubah password atau login ke akun selama **1-5 menit** ke depan. Sistem kami sedang memproses aktivasi Premium otomatis di belakang layar.` : '';
+    
+    if (bot) {
+        let strukLunas = `✅ *${successTitle}* ✅\n\n`;
+        strukLunas += `🧾 *No. Invoice:* \`${orderData.order_id}\`\n`;
+        strukLunas += `🗓️ *Tanggal:* ${moment().format('DD/MM/YYYY HH:mm')}\n\n`;
+        strukLunas += `🎁 *DETAIL PESANAN KAMU:*\n`;
+        strukLunas += `━━━━━━━━━━━━━━━━━━━━━\n`;
+        
+        if (orderData.reserved_accounts.length > 5) {
+            strukLunas += `📄 _Detail akun terlampir pada file/dokumen di bawah ini._\n`;
+        } else {
+            strukLunas += `${orderData.reserved_accounts.join('\n')}\n`;
+        }
+
+        strukLunas += `━━━━━━━━━━━━━━━━━━━━━\n`;
+        strukLunas += `Terima kasih telah berbelanja di *${config.storeName}*! 🙏${noteText}`;
+
+        bot.sendMessage(orderData.user_id, strukLunas, { parse_mode: 'Markdown' });
+        
+        if (orderData.reserved_accounts.length > 5) {
+            const fileBuffer = Buffer.from(orderData.reserved_accounts.join('\n'), 'utf-8');
+            bot.sendDocument(orderData.user_id, fileBuffer, {}, {
+                filename: `Akun_${orderData.order_id}.txt`,
+                contentType: 'text/plain'
+            });
+        }
+
+        if (orderData.msg_id) bot.deleteMessage(orderData.user_id, orderData.msg_id).catch(()=>{});
+    }
+
+    if (selProd.name.toLowerCase().includes('youtube')) {
+        if (orderData.qty <= 50) {
+            runAutoPayQuietly(orderData.reserved_accounts);
+        } else {
+            console.log(`⚠️ [SYSTEM] Order ${orderData.order_id} lebih dari 50 akun (${orderData.qty}). Auto Pay dibatalkan agar server tidak overload.`);
+        }
+    }
+}
+
+// ==========================================
+// PENDING QRIS & APPROVAL MANUAL
+// ==========================================
+app.get('/api/bot/pending', async (req, res) => {
+    res.json(await readDB(paths.pending_qris));
+});
+
+app.post('/api/bot/pending/:id/approve', async (req, res) => {
+    const release = await dbLock.acquire(); 
+    try {
+        let pq = await readDB(paths.pending_qris);
+        const idx = pq.findIndex(o => o.order_id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Pesanan tidak ditemukan atau sudah expired' });
+        
+        const orderData = pq[idx];
+        await finalizeOrderSuccess(orderData, 'qris_manual', 'PEMBAYARAN DISETUJUI MANUAL');
+
+        pq.splice(idx, 1); 
+        await fs.writeFile(paths.pending_qris, JSON.stringify(pq, null, 2));
+        res.json({ success: true });
+
+    } finally { release(); }
+});
+
+app.post('/api/bot/pending/:id/reject', async (req, res) => {
+    const release = await dbLock.acquire();
+    try {
+        let pq = await readDB(paths.pending_qris);
+        const idx = pq.findIndex(o => o.order_id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Not found' });
+        
+        const orderData = pq[idx];
+        const sp = path.join(paths.stocks, `stock_${orderData.var_id}.json`); 
+        let sd = await readDB(sp);
+        sd.push(...orderData.reserved_accounts); 
+        await fs.writeFile(sp, JSON.stringify(sd, null, 2));
+        
+        if (bot) bot.sendMessage(orderData.user_id, `❌ *PEMBAYARAN DITOLAK*\n\nInvoice: \`${orderData.order_id}\`\nPesanan dibatalkan oleh admin dan stok telah dikembalikan.`, { parse_mode: 'Markdown' });
+        if (bot && orderData.msg_id) bot.deleteMessage(orderData.user_id, orderData.msg_id).catch(()=>{});
+
+        pq.splice(idx, 1); 
+        await fs.writeFile(paths.pending_qris, JSON.stringify(pq, null, 2));
+        res.json({ success: true });
+    } finally { release(); }
+});
+
+app.get('/api/bot/transactions', async (req, res) => { 
+    const orders = await readDB(paths.orders);
+    res.json(orders.map(o => ({ 
+        trxId: o.order_id, 
+        userId: o.user_id, 
+        product: o.product, 
+        paymentMethod: o.paymentMethod || 'balance', 
+        amount: o.total, 
+        purchaseDate: o.date, 
+        accounts: o.accounts || [] 
+    }))); 
+});
+
+// WEBHOOK DANA
+app.post('/dana-webhook', async (req, res) => {
+    const text = req.body.message || req.body.text || JSON.stringify(req.body);
+    const match = text.match(/Rp\s*([\d\.]+)/i); 
+    if (!match) return res.send("Abaikan");
+    
+    const amount = parseInt(match[1].replace(/\./g, ''));
+    
+    const release = await dbLock.acquire(); 
+    try {
+        let pq = await readDB(paths.pending_qris); 
+        const idx = pq.findIndex(o => o.total === amount);
+        
+        if (idx !== -1) {
+            const orderData = pq[idx]; 
+            await finalizeOrderSuccess(orderData, 'qris', 'PEMBAYARAN DANA TERDETEKSI! (LUNAS)');
+
+            pq.splice(idx, 1); 
+            await fs.writeFile(paths.pending_qris, JSON.stringify(pq, null, 2));
+            return res.send("Sukses");
+        }
+    } finally {
+        release(); 
+    }
+    
+    res.send("Not Found");
+});
+
+// ==========================================
+// ENDPOINT: PROXY AUTO PAY & AKUN GAGAL
+// ==========================================
+app.get('/api/bot/autopay/failed', async (req, res) => {
+    try {
+        const config = await readConfig();
+        if (!config.autoPayUrl || !config.autoPaySecret) return res.json({ accounts: [] });
+
+        const baseUrl = config.autoPayUrl.replace('/trigger-autopay', '');
+        const response = await fetch(`${baseUrl}/check-failed`, {
+            headers: { 'x-api-key': config.autoPaySecret }
+        });
+        const data = await response.json();
+        res.json({ accounts: data.accounts || [] });
+    } catch (err) {
+        res.status(500).json({ error: 'Gagal menghubungi Server Auto Pay' });
+    }
+});
+
+app.post('/api/bot/autopay/retry', async (req, res) => {
+    try {
+        const config = await readConfig();
+        if (!config.autoPayUrl || !config.autoPaySecret) {
+            return res.status(400).json({ error: 'URL Auto Pay belum diatur di Config.' });
+        }
+
+        const baseUrl = config.autoPayUrl.replace('/trigger-autopay', '');
+        const response = await fetch(`${baseUrl}/retry-autopay`, {
+            method: 'POST',
+            headers: { 'x-api-key': config.autoPaySecret }
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            res.json({ success: true });
+        } else {
+            res.status(400).json({ error: data.error || 'Server menolak' });
+        }
+    } catch (err) {
+        res.status(500).json({ error: 'Gagal menghubungi Server Auto Pay' });
+    }
 });
 
 app.listen(WEBHOOK_PORT, () => { 
