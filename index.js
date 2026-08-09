@@ -638,6 +638,9 @@ async function setupTelegramBot() {
             
             if (finalQty > stockCount || stockCount === 0) return bot.answerCallbackQuery(query.id, { text: "Maaf, stok barang sedang kosong.", show_alert: true });
             
+            // ==========================================
+            // FIX: HANYA GENERATE ID, LALU SERAHKAN KE finalizeOrderSuccess
+            // ==========================================
             if (parts[1] === 'saldo') {
                 const cfg = await readConfig(); 
                 const prefix = cfg.trxPrefix || "BR"; 
@@ -662,21 +665,7 @@ async function setupTelegramBot() {
                     const accs = sd.splice(0, finalQty); 
                     await fs.writeFile(sp, JSON.stringify(sd, null, 2));
                     
-                    let orders = await readDB(paths.orders); 
                     let oid = `${prefix}-${Date.now()}`;
-                    
-                    orders.push({ order_id: oid, user_id: user.id, product: `${selProd.name} - ${selVar.name}`, qty: finalQty, total: basePrice, date: moment().format('YYYY-MM-DD HH:mm'), paymentMethod: 'balance', accounts: accs });
-                    await fs.writeFile(paths.orders, JSON.stringify(orders, null, 2));
-                    
-                    let pData = await readDB(paths.products);
-                    for (let pd of pData) {
-                        let vr = pd.variations && pd.variations.find(x => x.id === selVar.id);
-                        if (vr) { 
-                            vr.sold = (vr.sold || 0) + finalQty; 
-                            break; 
-                        }
-                    }
-                    await fs.writeFile(paths.products, JSON.stringify(pData, null, 2));
                     
                     await finalizeOrderSuccess({
                         order_id: oid,
@@ -1112,10 +1101,16 @@ app.get('/api/bot/autopay/test', async (req, res) => {
             });
         }
 
-        const baseUrl = config.autoPayUrl.replace('/trigger-autopay', '');
-        console.log(`🔍 [DEBUG TEST] Mencoba menghubungi: ${baseUrl}/check-failed`);
+        // Fix: Pembersihan URL yang sangat presisi
+        let baseUrl = config.autoPayUrl
+            .replace(/\/api\/trigger-autopay\/?$/, '')
+            .replace(/\/trigger-autopay\/?$/, '')
+            .replace(/\/api\/?$/, '');
+        let targetUrl = `${baseUrl}/api/check-failed`;
 
-        const response = await fetch(`${baseUrl}/check-failed`, {
+        console.log(`🔍 [DEBUG TEST] Mencoba menghubungi: ${targetUrl}`);
+
+        const response = await fetch(targetUrl, {
             method: 'GET',
             headers: { 
                 'x-api-key': config.autoPaySecret 
@@ -1146,7 +1141,7 @@ app.get('/api/bot/autopay/test', async (req, res) => {
 });
 
 // ==========================================
-// ENDPOINT CEK AKUN GAGAL (NORMALIZED URL)
+// ENDPOINT CEK AKUN GAGAL (NORMALIZED URL & LIMIT 100)
 // ==========================================
 app.get('/api/bot/autopay/failed', async (req, res) => {
     try {
@@ -1155,7 +1150,11 @@ app.get('/api/bot/autopay/failed', async (req, res) => {
             return res.json({ accounts: [] });
         }
 
-        let baseUrl = config.autoPayUrl.replace(/\/api\/trigger-autopay\/?$/, '').replace(/\/trigger-autopay\/?$/, '');
+        // Fix: Pembersihan URL
+        let baseUrl = config.autoPayUrl
+            .replace(/\/api\/trigger-autopay\/?$/, '')
+            .replace(/\/trigger-autopay\/?$/, '')
+            .replace(/\/api\/?$/, '');
         let targetUrl = `${baseUrl}/api/check-failed`;
 
         const response = await fetch(targetUrl, {
@@ -1167,7 +1166,14 @@ app.get('/api/bot/autopay/failed', async (req, res) => {
         
         try {
             const data = JSON.parse(responseText);
-            return res.json({ accounts: data.accounts || [] });
+            let accounts = data.accounts || [];
+            
+            // Fix: Pembatasan 100 akun maksimal yang dijanjikan
+            if (accounts.length > 100) {
+                accounts = accounts.slice(0, 100);
+            }
+
+            return res.json({ accounts });
         } catch (e) {
             return res.json({ accounts: [] });
         }
@@ -1187,10 +1193,12 @@ app.post('/api/bot/autopay/retry', async (req, res) => {
             return res.status(400).json({ success: false, error: 'URL Auto Pay belum diatur di Config.' });
         }
 
-        let cleanBase = config.autoPayUrl
+        // Fix: Pembersihan URL
+        let baseUrl = config.autoPayUrl
+            .replace(/\/api\/trigger-autopay\/?$/, '')
             .replace(/\/trigger-autopay\/?$/, '')
             .replace(/\/api\/?$/, '');
-        let targetUrl = `${cleanBase}/api/retry-autopay`;
+        let targetUrl = `${baseUrl}/api/retry-autopay`;
 
         console.log(`🚀 [RETRY] Menghubungi Server B: ${targetUrl}`);
 
