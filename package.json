@@ -1,29 +1,27 @@
 {
   "name": "br-store-bot",
   "version": "1.0.0",
-  "description": "Sistem Jual Beli Akun Premium BR STORE",
+  "description": "Sistem Bot Telegram, Web Panel, dan Auto Pay Puppeteer",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "concurrently \"node receiver.js\" \"node index.js\"",
+    "bot": "node index.js",
+    "receiver": "node receiver.js"
   },
-  "keywords": [
-    "telegram",
-    "bot",
-    "store",
-    "br-store"
-  ],
-  "author": "BR STORE",
-  "license": "ISC",
   "dependencies": {
+    "adm-zip": "^0.5.14",
+    "axios": "^1.7.2",
+    "concurrently": "^8.2.2",
     "dotenv": "^16.4.5",
-    "express": "^5.2.1",
-    "express-session": "^1.19.0",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "form-data": "^4.0.0",
     "moment": "^2.30.1",
-    "multer": "^2.2.0",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-cron": "^3.0.3",
+    "node-telegram-bot-api": "^0.66.0",
+    "puppeteer": "^22.12.1",
+    "rimraf": "^5.0.7"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.14"
-  }
+  "author": "BR Store",
+  "license": "ISC"
 }
