@@ -5,6 +5,8 @@ const path = require('path');
 const moment = require('moment'); 
 const express = require('express');
 const session = require('express-session');
+const AdmZip = require('adm-zip'); // Tambahan Modul ZIP
+const cron = require('node-cron'); // Tambahan Modul Jadwal (Cron)
 
 // ==========================================
 // INISIALISASI WEB SERVER
@@ -51,7 +53,7 @@ async function readConfig() {
 }
 
 // ==========================================
-// FUNGSI AUTO BACKUP DATABASE KE TELEGRAM
+// FUNGSI AUTO BACKUP DATABASE (.ZIP) KE TELEGRAM
 // ==========================================
 async function sendDatabaseBackup(targetChatId = null) {
     try {
@@ -63,50 +65,54 @@ async function sendDatabaseBackup(targetChatId = null) {
             return;
         }
 
-        let filesToBackup = [];
+        const zip = new AdmZip();
+        let hasFiles = false;
+
         try {
+            // Memasukkan file utama ke dalam ZIP
             const rootFiles = ['users.json', 'products.json', 'orders.json', 'pending_qris.json', 'admins.json', 'config.json'];
             for (let f of rootFiles) {
                 let p = path.join(DB_DIR, f);
                 try {
                     await fs.access(p);
-                    filesToBackup.push(p);
+                    zip.addLocalFile(p);
+                    hasFiles = true;
                 } catch {}
             }
 
+            // Memasukkan folder stocks ke dalam folder 'stocks' di ZIP
             try {
                 const stockFiles = await fs.readdir(paths.stocks);
                 for (let sf of stockFiles) {
                     if (sf.endsWith('.json')) {
-                        filesToBackup.push(path.join(paths.stocks, sf));
+                        zip.addLocalFile(path.join(paths.stocks, sf), 'stocks');
+                        hasFiles = true;
                     }
                 }
             } catch {}
 
-            if (filesToBackup.length === 0) {
+            if (!hasFiles) {
                 if (targetChatId) bot.sendMessage(targetChatId, "⚠️ Tidak ada file database yang ditemukan untuk di-backup.");
                 return;
             }
 
-            await bot.sendMessage(adminId, `📦 *AUTO BACKUP DATABASE*\n🗓️ Waktu: ${moment().format('YYYY-MM-DD HH:mm:ss')}\n📁 Total File: ${filesToBackup.length} file`, { parse_mode: 'Markdown' });
+            // Generate Buffer ZIP langsung dari memori tanpa menyimpannya ke disk
+            const zipBuffer = zip.toBuffer();
+            const zipName = `Backup_DB_${moment().format('YYYY-MM-DD_HH-mm')}.zip`;
 
-            for (let filePath of filesToBackup) {
-                let fileName = path.basename(filePath);
-                if (filePath.includes('stocks')) {
-                    fileName = `stock_${fileName}`;
-                }
-                await bot.sendDocument(adminId, filePath, {}, {
-                    filename: fileName,
-                    contentType: 'application/json'
-                });
-            }
+            await bot.sendMessage(adminId, `📦 *AUTO BACKUP DATABASE*\n🗓️ Waktu: ${moment().format('YYYY-MM-DD HH:mm:ss')}\n📁 Format: Archive (.zip)`, { parse_mode: 'Markdown' });
 
-            console.log("✅ [BACKUP] Berhasil mengirim database backup ke Telegram Admin.");
+            await bot.sendDocument(adminId, zipBuffer, {}, {
+                filename: zipName,
+                contentType: 'application/zip'
+            });
+
+            console.log("✅ [BACKUP] Berhasil mengirim database backup (ZIP) ke Telegram Admin.");
             if (targetChatId) {
-                bot.sendMessage(targetChatId, "✅ Backup database berhasil dikirim ke chat ini!");
+                bot.sendMessage(targetChatId, "✅ Backup database (ZIP) berhasil dikirim ke chat ini!");
             }
         } catch (err) {
-            console.error("❌ [BACKUP] Gagal membaca direktori database:", err.message);
+            console.error("❌ [BACKUP] Gagal memproses zip backup:", err.message);
         }
     } catch (e) {
         console.error("❌ [BACKUP ERROR]:", e.message);
@@ -221,10 +227,14 @@ async function initDB() {
     await cleanupExpiredQris(); 
     setInterval(cleanupExpiredQris, 60 * 1000); 
 
-    // Jadwal Auto Backup setiap 24 jam sekali
-    setInterval(() => {
+    // Jadwal Auto Backup menggunakan Cron Job (00:01 WIB)
+    cron.schedule('1 0 * * *', () => {
+        console.log("⏰ [CRON] Menjalankan Auto Backup harian (00:01 WIB)...");
         sendDatabaseBackup();
-    }, 24 * 60 * 60 * 1000);
+    }, {
+        scheduled: true,
+        timezone: "Asia/Jakarta" // Menyesuaikan dengan Waktu Indonesia Barat (WIB)
+    });
 }
 
 // ==========================================
@@ -459,7 +469,7 @@ async function setupTelegramBot() {
     bot.onText(/\/backup/, async (msg) => {
         const config = await readConfig();
         if (config.adminId && msg.from.id.toString() === config.adminId.toString()) {
-            bot.sendMessage(msg.chat.id, "📦 Sedang memproses backup seluruh database...");
+            bot.sendMessage(msg.chat.id, "📦 Memproses ZIP backup seluruh database...");
             await sendDatabaseBackup(msg.chat.id);
         } else {
             bot.sendMessage(msg.chat.id, "❌ Perintah khusus Admin.");
@@ -637,10 +647,10 @@ async function setupTelegramBot() {
             const basePrice = calcData.total;
             
             if (finalQty > stockCount || stockCount === 0) return bot.answerCallbackQuery(query.id, { text: "Maaf, stok barang sedang kosong.", show_alert: true });
+
+            const dateStr = moment().format('DDMMYYYY');
+            const randomStr = Math.random().toString(36).substring(2, 7).toUpperCase();
             
-            // ==========================================
-            // FIX: HANYA GENERATE ID, LALU SERAHKAN KE finalizeOrderSuccess
-            // ==========================================
             if (parts[1] === 'saldo') {
                 const cfg = await readConfig(); 
                 const prefix = cfg.trxPrefix || "BR"; 
@@ -665,7 +675,7 @@ async function setupTelegramBot() {
                     const accs = sd.splice(0, finalQty); 
                     await fs.writeFile(sp, JSON.stringify(sd, null, 2));
                     
-                    let oid = `${prefix}-${Date.now()}`;
+                    let oid = `${prefix}-${dateStr}-${randomStr}`;
                     
                     await finalizeOrderSuccess({
                         order_id: oid,
@@ -695,7 +705,7 @@ async function setupTelegramBot() {
                     
                     const kodeUnik = Math.floor(Math.random() * 20) + 1; 
                     const finalTotal = basePrice + kodeUnik; 
-                    const oid = `${prefix}-${Date.now()}`;
+                    const oid = `${prefix}-${dateStr}-${randomStr}`;
                     const dynamicQrisString = makeDynamicQris(cfg.qrisString, finalTotal);
                     
                     let pq = await readDB(paths.pending_qris);
@@ -904,7 +914,6 @@ app.post('/api/bot/stock/:id', async (req, res) => {
     res.json({ success: true }); 
 });
 
-// Endpoint Users disesuaikan dengan template baru (id, first_name, joined_at)
 app.get('/api/bot/users', async (req, res) => { 
     const users = await readDB(paths.users); 
     res.json(users.map(u => ({ 
@@ -1101,7 +1110,6 @@ app.get('/api/bot/autopay/test', async (req, res) => {
             });
         }
 
-        // Fix: Pembersihan URL yang sangat presisi
         let baseUrl = config.autoPayUrl
             .replace(/\/api\/trigger-autopay\/?$/, '')
             .replace(/\/trigger-autopay\/?$/, '')
@@ -1112,14 +1120,10 @@ app.get('/api/bot/autopay/test', async (req, res) => {
 
         const response = await fetch(targetUrl, {
             method: 'GET',
-            headers: { 
-                'x-api-key': config.autoPaySecret 
-            }
+            headers: { 'x-api-key': config.autoPaySecret }
         });
 
         const responseText = await response.text();
-        console.log(`📥 [DEBUG TEST] Status: ${response.status}, Respon:`, responseText);
-
         if (response.ok) {
             return res.json({ 
                 success: true, 
@@ -1132,17 +1136,10 @@ app.get('/api/bot/autopay/test', async (req, res) => {
             });
         }
     } catch (err) {
-        console.error(`❌ [DEBUG TEST ERROR]:`, err.message);
-        return res.json({ 
-            success: false, 
-            error: `Gagal terhubung / Fetch Error: ${err.message}` 
-        });
+        return res.json({ success: false, error: `Gagal terhubung: ${err.message}` });
     }
 });
 
-// ==========================================
-// ENDPOINT CEK AKUN GAGAL (NORMALIZED URL & LIMIT 100)
-// ==========================================
 app.get('/api/bot/autopay/failed', async (req, res) => {
     try {
         const config = await readConfig();
@@ -1150,7 +1147,6 @@ app.get('/api/bot/autopay/failed', async (req, res) => {
             return res.json({ accounts: [] });
         }
 
-        // Fix: Pembersihan URL
         let baseUrl = config.autoPayUrl
             .replace(/\/api\/trigger-autopay\/?$/, '')
             .replace(/\/trigger-autopay\/?$/, '')
@@ -1168,7 +1164,6 @@ app.get('/api/bot/autopay/failed', async (req, res) => {
             const data = JSON.parse(responseText);
             let accounts = data.accounts || [];
             
-            // Fix: Pembatasan 100 akun maksimal yang dijanjikan
             if (accounts.length > 100) {
                 accounts = accounts.slice(0, 100);
             }
@@ -1178,14 +1173,10 @@ app.get('/api/bot/autopay/failed', async (req, res) => {
             return res.json({ accounts: [] });
         }
     } catch (err) {
-        console.error(`❌ [CHECK FAILED ERROR]:`, err.message);
         return res.json({ accounts: [] });
     }
 });
 
-// ==========================================
-// ENDPOINT RETRY AUTO PAY (NORMALIZED URL)
-// ==========================================
 app.post('/api/bot/autopay/retry', async (req, res) => {
     try {
         const config = await readConfig();
@@ -1193,14 +1184,11 @@ app.post('/api/bot/autopay/retry', async (req, res) => {
             return res.status(400).json({ success: false, error: 'URL Auto Pay belum diatur di Config.' });
         }
 
-        // Fix: Pembersihan URL
         let baseUrl = config.autoPayUrl
             .replace(/\/api\/trigger-autopay\/?$/, '')
             .replace(/\/trigger-autopay\/?$/, '')
             .replace(/\/api\/?$/, '');
         let targetUrl = `${baseUrl}/api/retry-autopay`;
-
-        console.log(`🚀 [RETRY] Menghubungi Server B: ${targetUrl}`);
 
         const response = await fetch(targetUrl, {
             method: 'POST',
@@ -1212,11 +1200,9 @@ app.post('/api/bot/autopay/retry', async (req, res) => {
             const data = JSON.parse(responseText);
             return res.json(data);
         } catch (e) {
-            console.error(`❌ [RETRY] Respon bukan JSON:`, responseText);
-            return res.status(400).json({ success: false, error: 'Server B mengembalikan respon tidak valid (HTML 404/500).' });
+            return res.status(400).json({ success: false, error: 'Server B mengembalikan respon tidak valid (HTML).' });
         }
     } catch (err) {
-        console.error(`❌ [RETRY ERROR]:`, err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
